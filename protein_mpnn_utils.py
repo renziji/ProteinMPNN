@@ -1,6 +1,7 @@
 from __future__ import print_function
 import json, time, os, sys, glob
 import shutil
+import string
 import numpy as np
 import torch
 from torch import optim
@@ -137,53 +138,88 @@ def parse_PDB_biounits(x, atoms=['N','CA','C'], chain=None):
       return 'no_chain', 'no_chain'
 
 def parse_PDB(path_to_pdb, input_chain_list=None, ca_only=False):
+    # Parse a single PDB file and return a list of dicts with sequence and backbone coordinates.
+    # path_to_pdb:     path to the .pdb file
+    # input_chain_list: list of chain IDs to parse (e.g. ["A"]); if None, exhaustively try all candidates
+    # ca_only:         if True, extract only C-alpha atoms; otherwise N, CA, C, O backbone atoms
+    # c: counter of successfully parsed structures (unused, kept from original implementation)
     c=0
+    # list that holds the parsed dict for each PDB file; this is the return value
     pdb_dict_list = []
-    init_alphabet = ['A', 'B', 'C', 'D', 'E', 'F', 'G','H', 'I', 'J','K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T','U', 'V','W','X', 'Y', 'Z', 'a', 'b', 'c', 'd', 'e', 'f', 'g','h', 'i', 'j','k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't','u', 'v','w','x', 'y', 'z']
+    # candidate chain names: uppercase A-Z followed by lowercase a-z (52 letters)
+    init_alphabet = list(string.ascii_uppercase + string.ascii_lowercase)
+    # second layer: numbers 0..299 for large complexes that use numeric chain IDs
     extra_alphabet = [str(item) for item in list(np.arange(300))]
+    # combined candidate list (352 entries); each name is probed to see if the chain exists
     chain_alphabet = init_alphabet + extra_alphabet
      
+    # if the user explicitly supplies chains, use only those (faster than exhaustive search)
     if input_chain_list:
         chain_alphabet = input_chain_list  
  
-
+    # list of files to parse (single file here; loop structure supports multi-biological-unit files)
     biounit_names = [path_to_pdb]
     for biounit in biounit_names:
+        # dict holding all parsed info for the current PDB file
         my_dict = {}
+        # number of chains successfully parsed from this file
         s = 0
+        # concatenated sequence string from all chains in the file
         concat_seq = ''
+        # the following five lists are unused (dead code), kept from the original version
         concat_N = []
         concat_CA = []
         concat_C = []
         concat_O = []
         concat_mask = []
         coords_dict = {}
+        # iterate over candidate chain names and try to extract coordinates for each
         for letter in chain_alphabet:
+            # choose which atom types to extract based on the ca_only flag
             if ca_only:
                 sidechain_atoms = ['CA']
             else:
                 sidechain_atoms = ['N', 'CA', 'C', 'O']
+            # call the low-level parser: filter the PDB text by chain and atom names
+            # returns xyz: shape (n_residues, n_atoms, 3) coordinate array; seq: amino-acid sequence string
+            # if the chain does not exist, xyz is returned as a placeholder string (type check signals "not found")
             xyz, seq = parse_PDB_biounits(biounit, atoms=sidechain_atoms, chain=letter)
+            # only write to the dict when xyz is not a string, i.e. the chain actually exists
             if type(xyz) != str:
+                # append this chain's sequence to the concatenated full sequence
                 concat_seq += seq[0]
+                # store this chain's sequence under a key like 'seq_chain_A'
                 my_dict['seq_chain_'+letter]=seq[0]
+                # initialize the coordinate sub-dict for this chain
                 coords_dict_chain = {}
+                # coarse-grained mode: store only C-alpha coordinates, shape (n_res, 3)
                 if ca_only:
                     coords_dict_chain['CA_chain_'+letter]=xyz.tolist()
+                # full backbone mode: store N / CA / C / O coordinates separately, each shape (n_res, 3)
                 else:
                     coords_dict_chain['N_chain_' + letter] = xyz[:, 0, :].tolist()
                     coords_dict_chain['CA_chain_' + letter] = xyz[:, 1, :].tolist()
                     coords_dict_chain['C_chain_' + letter] = xyz[:, 2, :].tolist()
                     coords_dict_chain['O_chain_' + letter] = xyz[:, 3, :].tolist()
+                # attach this chain's coordinate sub-dict to the main dict under 'coords_chain_A' etc.
                 my_dict['coords_chain_'+letter]=coords_dict_chain
+                # increment the parsed-chain counter
                 s += 1
+        # find the last "/" in the path to strip the directory prefix
         fi = biounit.rfind("/")
+        # take the file name and remove the trailing 4 characters (".pdb") to get the structure name
         my_dict['name']=biounit[(fi+1):-4]
+        # record the total number of chains found in this file
         my_dict['num_of_chains'] = s
+        # store the concatenated sequence of all chains
         my_dict['seq'] = concat_seq
+        # this condition is always true (s never exceeds the candidate count); effectively a no-op filter
         if s <= len(chain_alphabet):
+            # add this file's parsed dict to the return list
             pdb_dict_list.append(my_dict)
+            # increment the (unused) structure counter
             c+=1
+    # return the list of parsed dicts
     return pdb_dict_list
 
 
