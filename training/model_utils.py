@@ -27,7 +27,7 @@ def featurize(batch, device):
     mask_self = np.ones([B, L_max, L_max], dtype=np.int32) #for interface loss calculation - 0.0 for self interaction, 1.0 for other
     chain_encoding_all = np.zeros([B, L_max], dtype=np.int32) #integer encoding for chains 0, 0, 0,...0, 1, 1,..., 1, 2, 2, 2...
     S = np.zeros([B, L_max], dtype=np.int32) #sequence AAs integers
-    init_alphabet = ['A', 'B', 'C', 'D', 'E', 'F', 'G','H', 'I', 'J','K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T','U', 'V','W','X', 'Y', 'Z', 'a', 'b', 'c', 'd', 'e', 'f', 'g','h', 'i', 'j','k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't','u', 'v','w','x', 'y', 'z']
+    init_alphabet = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z']
     extra_alphabet = [str(item) for item in list(np.arange(300))]
     chain_letters = init_alphabet + extra_alphabet
     for i, b in enumerate(batch):
@@ -91,32 +91,32 @@ def featurize(batch, device):
                 residue_idx[i, l0:l1] = 100*(c-1)+np.arange(l0, l1)
                 l0 += chain_length
                 c+=1
-        x = np.concatenate(x_chain_list,0) #[L, 4, 3]
+        x = np.concatenate(x_chain_list, 0) #[L, 4, 3]
         all_sequence = "".join(chain_seq_list)
-        m = np.concatenate(chain_mask_list,0) #[L,], 1.0 for places that need to be predicted
-        chain_encoding = np.concatenate(chain_encoding_list,0)
+        m = np.concatenate(chain_mask_list, 0) #[L,], 1.0 for places that need to be predicted
+        chain_encoding = np.concatenate(chain_encoding_list, 0)
 
         l = len(all_sequence)
-        x_pad = np.pad(x, [[0,L_max-l], [0,0], [0,0]], 'constant', constant_values=(np.nan, ))
-        X[i,:,:,:] = x_pad
+        x_pad = np.pad(x, [[0, L_max-l], [0, 0], [0, 0]], 'constant', constant_values=(np.nan, ))
+        X[i, :, :, :] = x_pad
 
-        m_pad = np.pad(m, [[0,L_max-l]], 'constant', constant_values=(0.0, ))
-        chain_M[i,:] = m_pad
+        m_pad = np.pad(m, [[0, L_max-l]], 'constant', constant_values=(0.0, ))
+        chain_M[i, :] = m_pad
 
-        chain_encoding_pad = np.pad(chain_encoding, [[0,L_max-l]], 'constant', constant_values=(0.0, ))
-        chain_encoding_all[i,:] = chain_encoding_pad
+        chain_encoding_pad = np.pad(chain_encoding, [[0, L_max-l]], 'constant', constant_values=(0.0, ))
+        chain_encoding_all[i, :] = chain_encoding_pad
 
         # Convert to labels
         indices = np.asarray([alphabet.index(a) for a in all_sequence], dtype=np.int32)
         S[i, :l] = indices
 
     isnan = np.isnan(X)
-    mask = np.isfinite(np.sum(X,(2,3))).astype(np.float32)
+    mask = np.isfinite(np.sum(X, (2, 3))).astype(np.float32)
     X[isnan] = 0.
 
     # Conversion
-    residue_idx = torch.from_numpy(residue_idx).to(dtype=torch.long,device=device)
-    S = torch.from_numpy(S).to(dtype=torch.long,device=device)
+    residue_idx = torch.from_numpy(residue_idx).to(dtype=torch.long, device=device)
+    S = torch.from_numpy(S).to(dtype=torch.long, device=device)
     X = torch.from_numpy(X).to(dtype=torch.float32, device=device)
     mask = torch.from_numpy(mask).to(dtype=torch.float32, device=device)
     mask_self = torch.from_numpy(mask_self).to(dtype=torch.float32, device=device)
@@ -131,7 +131,7 @@ def loss_nll(S, log_probs, mask):
     loss = criterion(
         log_probs.contiguous().view(-1, log_probs.size(-1)), S.contiguous().view(-1)
     ).view(S.size())
-    S_argmaxed = torch.argmax(log_probs,-1) #[B, L]
+    S_argmaxed = torch.argmax(log_probs, -1) #[B, L]
     true_false = (S == S_argmaxed).float()
     loss_av = torch.sum(loss * mask) / torch.sum(mask)
     return loss, loss_av, true_false
@@ -205,7 +205,7 @@ class EncLayer(nn.Module):
         """ Parallel computation of full transformer layer """
 
         h_EV = cat_neighbors_nodes(h_V, h_E, E_idx)
-        h_V_expand = h_V.unsqueeze(-2).expand(-1,-1,h_EV.size(-2),-1)
+        h_V_expand = h_V.unsqueeze(-2).expand(-1, -1, h_EV.size(-2), -1)
         h_EV = torch.cat([h_V_expand, h_EV], -1)
         h_message = self.W3(self.act(self.W2(self.act(self.W1(h_EV)))))
         if mask_attend is not None:
@@ -220,7 +220,7 @@ class EncLayer(nn.Module):
             h_V = mask_V * h_V
 
         h_EV = cat_neighbors_nodes(h_V, h_E, E_idx)
-        h_V_expand = h_V.unsqueeze(-2).expand(-1,-1,h_EV.size(-2),-1)
+        h_V_expand = h_V.unsqueeze(-2).expand(-1, -1, h_EV.size(-2), -1)
         h_EV = torch.cat([h_V_expand, h_EV], -1)
         h_message = self.W13(self.act(self.W12(self.act(self.W11(h_EV)))))
         h_E = self.norm3(h_E + self.dropout3(h_message))
@@ -249,7 +249,7 @@ class DecLayer(nn.Module):
         """ Parallel computation of full transformer layer """
 
         # Concatenate h_V_i to h_E_ij
-        h_V_expand = h_V.unsqueeze(-2).expand(-1,-1,h_E.size(-2),-1)
+        h_V_expand = h_V.unsqueeze(-2).expand(-1, -1, h_E.size(-2), -1)
         h_EV = torch.cat([h_V_expand, h_E], -1)
 
         h_message = self.W3(self.act(self.W2(self.act(self.W1(h_EV)))))
@@ -312,8 +312,8 @@ class ProteinFeatures(nn.Module):
         self.norm_edges = nn.LayerNorm(edge_features)
 
     def _dist(self, X, mask, eps=1E-6):
-        mask_2D = torch.unsqueeze(mask,1) * torch.unsqueeze(mask,2)
-        dX = torch.unsqueeze(X,1) - torch.unsqueeze(X,2)
+        mask_2D = torch.unsqueeze(mask, 1) * torch.unsqueeze(mask, 2)
+        dX = torch.unsqueeze(X, 1) - torch.unsqueeze(X, 2)
         D = mask_2D * torch.sqrt(torch.sum(dX**2, 3) + eps)
         D_max, _ = torch.max(D, -1, keepdim=True)
         D_adjust = D + (1. - mask_2D) * D_max
@@ -325,15 +325,15 @@ class ProteinFeatures(nn.Module):
         device = D.device
         D_min, D_max, D_count = 2., 22., self.num_rbf
         D_mu = torch.linspace(D_min, D_max, D_count, device=device)
-        D_mu = D_mu.view([1,1,1,-1])
+        D_mu = D_mu.view([1, 1, 1, -1])
         D_sigma = (D_max - D_min) / D_count
         D_expand = torch.unsqueeze(D, -1)
         RBF = torch.exp(-((D_expand - D_mu) / D_sigma)**2)
         return RBF
 
     def _get_rbf(self, A, B, E_idx):
-        D_A_B = torch.sqrt(torch.sum((A[:,:,None,:] - B[:,None,:,:])**2,-1) + 1e-6) #[B, L, L]
-        D_A_B_neighbors = gather_edges(D_A_B[:,:,:,None], E_idx)[:,:,:,0] #[B,L,K]
+        D_A_B = torch.sqrt(torch.sum((A[:, :, None, :] - B[:, None, :, :])**2, -1) + 1e-6) #[B, L, L]
+        D_A_B_neighbors = gather_edges(D_A_B[:, :, :, None], E_idx)[:, :, :, 0] #[B,L,K]
         RBF_A_B = self._rbf(D_A_B_neighbors)
         return RBF_A_B
 
@@ -341,14 +341,14 @@ class ProteinFeatures(nn.Module):
         if self.training and self.augment_eps > 0:
             X = X + self.augment_eps * torch.randn_like(X)
         
-        b = X[:,:,1,:] - X[:,:,0,:]
-        c = X[:,:,2,:] - X[:,:,1,:]
+        b = X[:, :, 1, :] - X[:, :, 0, :]
+        c = X[:, :, 2, :] - X[:, :, 1, :]
         a = torch.cross(b, c, dim=-1)
-        Cb = -0.58273431*a + 0.56802827*b - 0.54067466*c + X[:,:,1,:]
-        Ca = X[:,:,1,:]
-        N = X[:,:,0,:]
-        C = X[:,:,2,:]
-        O = X[:,:,3,:]
+        Cb = -0.58273431*a + 0.56802827*b - 0.54067466*c + X[:, :, 1, :]
+        Ca = X[:, :, 1, :]
+        N = X[:, :, 0, :]
+        C = X[:, :, 2, :]
+        O = X[:, :, 3, :]
  
         D_neighbors, E_idx = self._dist(Ca, mask)
 
@@ -380,11 +380,11 @@ class ProteinFeatures(nn.Module):
         RBF_all.append(self._get_rbf(C, O, E_idx)) #C-O
         RBF_all = torch.cat(tuple(RBF_all), dim=-1)
 
-        offset = residue_idx[:,:,None]-residue_idx[:,None,:]
-        offset = gather_edges(offset[:,:,:,None], E_idx)[:,:,:,0] #[B, L, K]
+        offset = residue_idx[:, :, None]-residue_idx[:, None, :]
+        offset = gather_edges(offset[:, :, :, None], E_idx)[:, :, :, 0] #[B, L, K]
 
-        d_chains = ((chain_labels[:, :, None] - chain_labels[:,None,:])==0).long() #find self vs non-self interaction
-        E_chains = gather_edges(d_chains[:,:,:,None], E_idx)[:,:,:,0]
+        d_chains = ((chain_labels[:, :, None] - chain_labels[:, None, :])==0).long() #find self vs non-self interaction
+        E_chains = gather_edges(d_chains[:, :, :, None], E_idx)[:, :, :, 0]
         E_positional = self.embeddings(offset.long(), E_chains)
         E = torch.cat((E_positional, RBF_all), -1)
         E = self.edge_embedding(E)
@@ -453,7 +453,7 @@ class ProteinMPNN(nn.Module):
         decoding_order = torch.argsort((chain_M+0.0001)*(torch.abs(torch.randn(chain_M.shape, device=device)))) #[numbers will be smaller for places where chain_M = 0.0 and higher for places where chain_M = 1.0]
         mask_size = E_idx.shape[1]
         permutation_matrix_reverse = torch.nn.functional.one_hot(decoding_order, num_classes=mask_size).float()
-        order_mask_backward = torch.einsum('ij, biq, bjp->bqp',(1-torch.triu(torch.ones(mask_size,mask_size, device=device))), permutation_matrix_reverse, permutation_matrix_reverse)
+        order_mask_backward = torch.einsum('ij, biq, bjp->bqp', (1-torch.triu(torch.ones(mask_size, mask_size, device=device))), permutation_matrix_reverse, permutation_matrix_reverse)
         mask_attend = torch.gather(order_mask_backward, 2, E_idx).unsqueeze(-1)
         mask_1D = mask.view([mask.size(0), mask.size(1), 1, 1])
         mask_bw = mask_1D * mask_attend

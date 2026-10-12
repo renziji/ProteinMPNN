@@ -41,7 +41,7 @@ def main(args):
             tied_positions_list = []
             chain_length = len(result[f"seq_chain_{all_chain_list[0]}"])
             for chains in chain_list_input:
-                for i in range(1,chain_length+1):
+                for i in range(1, chain_length+1):
                     temp_dict = {}
                     for j, chain in enumerate(chains):
                         if args.pos_neg_chain_list and chain in chain_list_flat:

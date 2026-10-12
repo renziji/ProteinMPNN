@@ -27,18 +27,18 @@ np_lines = parse_pssm('/home/swang523/RLcage/capsid/monomersfordesign/8-16-21/ps
 mpnn_alphabet = 'ACDEFGHIKLMNPQRSTVWYX'
 input_alphabet = 'ARNDCQEGHILKMFPSTWYV'
 
-permutation_matrix = np.zeros([20,21])
+permutation_matrix = np.zeros([20, 21])
 for i in range(20):
     letter1 = input_alphabet[i]
     for j in range(21):
         letter2 = mpnn_alphabet[j]
         if letter1 == letter2:
-            permutation_matrix[i,j]=1.
+            permutation_matrix[i, j]=1.
 
-pssm_log_odds = np_lines[:,:20] @ permutation_matrix
-pssm_probs = np_lines[:,20:40] @ permutation_matrix
+pssm_log_odds = np_lines[:, :20] @ permutation_matrix
+pssm_probs = np_lines[:, 20:40] @ permutation_matrix
 
-X_mask = np.concatenate([np.zeros([1,20]), np.ones([1,1])], -1)
+X_mask = np.concatenate([np.zeros([1, 20]), np.ones([1, 1])], -1)
 
 def softmax(x, T):
     return np.exp(x/T)/np.sum(np.exp(x/T), -1, keepdims=True)

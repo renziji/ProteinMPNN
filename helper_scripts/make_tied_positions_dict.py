@@ -34,7 +34,7 @@ def main(args):
             all_chain_list = sorted([item[-1:] for item in list(result) if item[:9]=='seq_chain']) #A, B, C, ...
             tied_positions_list = []
             chain_length = len(result[f"seq_chain_{all_chain_list[0]}"])
-            for i in range(1,chain_length+1):
+            for i in range(1, chain_length+1):
                 temp_dict = {}
                 for j, chain in enumerate(all_chain_list):
                     temp_dict[chain] = [i] #needs to be a list

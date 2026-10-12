@@ -4,25 +4,25 @@ from pdbx.reader.PdbxContainers import DataCategory
 import gzip
 import numpy as np
 import torch
-import os,sys
+import os, sys
 import glob
 import re
 from scipy.spatial import KDTree
-from itertools import combinations,permutations
+from itertools import combinations, permutations
 import tempfile
 import subprocess
 
 RES_NAMES = [
-    'ALA','ARG','ASN','ASP','CYS',
-    'GLN','GLU','GLY','HIS','ILE',
-    'LEU','LYS','MET','PHE','PRO',
-    'SER','THR','TRP','TYR','VAL'
+    'ALA', 'ARG', 'ASN', 'ASP', 'CYS',
+    'GLN', 'GLU', 'GLY', 'HIS', 'ILE',
+    'LEU', 'LYS', 'MET', 'PHE', 'PRO',
+    'SER', 'THR', 'TRP', 'TYR', 'VAL'
 ]
 
 RES_NAMES_1 = 'ARNDCQEGHILKMFPSTWYV'
 
-to1letter = {aaa:a for a,aaa in zip(RES_NAMES_1,RES_NAMES)}
-to3letter = {a:aaa for a,aaa in zip(RES_NAMES_1,RES_NAMES)}
+to1letter = {aaa: a for a, aaa in zip(RES_NAMES_1, RES_NAMES)}
+to3letter = {a: aaa for a, aaa in zip(RES_NAMES_1, RES_NAMES)}
 
 ATOM_NAMES = [
     ("N", "CA", "C", "O", "CB"), # ala
@@ -47,11 +47,11 @@ ATOM_NAMES = [
     ("N", "CA", "C", "O", "CB", "CG1", "CG2") # val
 ]
         
-idx2ra = {(RES_NAMES_1[i],j):(RES_NAMES[i],a) for i in range(20) for j,a in enumerate(ATOM_NAMES[i])}
+idx2ra = {(RES_NAMES_1[i], j): (RES_NAMES[i], a) for i in range(20) for j, a in enumerate(ATOM_NAMES[i])}
 
-aa2idx = {(r,a):i for r,atoms in zip(RES_NAMES,ATOM_NAMES) 
-          for i,a in enumerate(atoms)}
-aa2idx.update({(r,'OXT'):3 for r in RES_NAMES})
+aa2idx = {(r, a): i for r, atoms in zip(RES_NAMES, ATOM_NAMES) 
+          for i, a in enumerate(atoms)}
+aa2idx.update({(r, 'OXT'): 3 for r in RES_NAMES})
 
 
 def writepdb(f, xyz, seq, bfac=None):
@@ -68,17 +68,17 @@ def writepdb(f, xyz, seq, bfac=None):
 
     idx = []
     for i in range(L):
-        for j,xyz_ij in enumerate(xyz[i]):
-            key = (seq[i],j)
+        for j, xyz_ij in enumerate(xyz[i]):
+            key = (seq[i], j)
             if key not in idx2ra.keys():
                 continue
             if np.isnan(xyz_ij).sum()>0:
                 continue
-            r,a = idx2ra[key]
+            r, a = idx2ra[key]
             f.write ("%-6s%5s %4s %3s %s%4d    %8.3f%8.3f%8.3f%6.2f%6.2f\n"%(
                     "ATOM", ctr, a, r, 
                     "A", i+1, xyz_ij[0], xyz_ij[1], xyz_ij[2],
-                    1.0, bfac[i,j] ) )
+                    1.0, bfac[i, j] ) )
             if a == 'CA':
                 idx.append(i)
             ctr += 1
@@ -107,19 +107,19 @@ def TMalign(chainA, chainB):
                           stdout=subprocess.PIPE, 
                           stderr=subprocess.PIPE, 
                           encoding='utf-8')
-    stdout,stderr = tm.communicate()
+    stdout, stderr = tm.communicate()
     lines = stdout.split('\n')
     
     # if TMalign failed
     if len(stderr) > 0:
-        return None,None
+        return None, None
 
     # parse transformation
     mtx.seek(0)
     tu = np.fromstring(''.join(l[2:] for l in mtx.readlines()[2:5]), 
-                       dtype=float, sep=' ').reshape((3,4))
-    t = tu[:,0]
-    u = tu[:,1:]
+                       dtype=float, sep=' ').reshape((3, 4))
+    t = tu[:, 0]
+    u = tu[:, 1:]
     
     # parse rmsd, sequence identity, and two TM-scores 
     rmsd = float(lines[16].split()[4][:-1])
@@ -140,36 +140,36 @@ def TMalign(chainA, chainB):
     alnAB = np.stack((idxA[(np.cumsum(ss1)-1)[mask]],
                       idxB[(np.cumsum(ss2)-1)[mask]]))
 
-    alnBA = np.stack((alnAB[1],alnAB[0]))
+    alnBA = np.stack((alnAB[1], alnAB[0]))
 
     # clean up
     fA.close()
     fB.close()
     mtx.close()
     
-    resAB = {'rmsd':rmsd, 'seqid':seqid, 'tm':tm1, 'aln':alnAB, 't':t, 'u':u}
-    resBA = {'rmsd':rmsd, 'seqid':seqid, 'tm':tm2, 'aln':alnBA, 't':-u.T@t, 'u':u.T}
+    resAB = {'rmsd': rmsd, 'seqid': seqid, 'tm': tm1, 'aln': alnAB, 't': t, 'u': u}
+    resBA = {'rmsd': rmsd, 'seqid': seqid, 'tm': tm2, 'aln': alnBA, 't': -u.T@t, 'u': u.T}
     
-    return resAB,resBA
+    return resAB, resBA
 
 
 def get_tm_pairs(chains):
     """run TM-align for all pairs of chains"""
 
     tm_pairs = {}
-    for A,B in combinations(chains.keys(),r=2):
-        resAB,resBA = TMalign(chains[A],chains[B])
+    for A, B in combinations(chains.keys(), r=2):
+        resAB, resBA = TMalign(chains[A], chains[B])
         #if resAB is None:
         #    continue
-        tm_pairs.update({(A,B):resAB})
-        tm_pairs.update({(B,A):resBA})
+        tm_pairs.update({(A, B): resAB})
+        tm_pairs.update({(B, A): resBA})
         
     # add self-alignments
     for A in chains.keys():
         L = chains[A]['xyz'].shape[0]
-        aln = np.arange(L)[chains[A]['mask'][:,1]]
-        aln = np.stack((aln,aln))
-        tm_pairs.update({(A,A):{'rmsd':0.0, 'seqid':1.0, 'tm':1.0, 'aln':aln}})
+        aln = np.arange(L)[chains[A]['mask'][:, 1]]
+        aln = np.stack((aln, aln))
+        tm_pairs.update({(A, A): {'rmsd': 0.0, 'seqid': 1.0, 'tm': 1.0, 'aln': aln}})
         
     return tm_pairs
         
@@ -185,14 +185,14 @@ def parseOperationExpression(expression) :
         if pos>0:
             start = int(e[0:pos])
             stop = int(e[pos+1:])
-            operations.extend([str(i) for i in range(start,stop+1)])
+            operations.extend([str(i) for i in range(start, stop+1)])
         else:
             operations.append(e)
             
     return operations
 
 
-def parseAssemblies(data,chids):
+def parseAssemblies(data, chids):
 
     xforms =  {'asmb_chains'  : None, 
                'asmb_details' : None, 
@@ -212,13 +212,13 @@ def parseAssemblies(data,chids):
         key = oper_list.getValue("id", k)
         val = np.eye(4)
         for i in range(3):
-            val[i,3] = float(oper_list.getValue("vector[%d]"%(i+1), k))
+            val[i, 3] = float(oper_list.getValue("vector[%d]"%(i+1), k))
             for j in range(3):
-                val[i,j] = float(oper_list.getValue("matrix[%d][%d]"%(i+1,j+1), k))
-        opers.update({key:val})
+                val[i, j] = float(oper_list.getValue("matrix[%d][%d]"%(i+1, j+1), k))
+        opers.update({key: val})
     
     
-    chains,details,method,ids = [],[],[],[]
+    chains, details, method, ids = [], [], [], []
 
     for index in range(assembly_gen.getRowCount()):
         
@@ -235,7 +235,7 @@ def parseAssemblies(data,chids):
         # chain IDs which the transform should be applied to
         chains.append(assembly_gen.getValue("asym_id_list", index))
 
-        index_asmb = min(index,assembly_data.getRowCount()-1)
+        index_asmb = min(index, assembly_data.getRowCount()-1)
         details.append(assembly_data.getValue("details", index_asmb))
         method.append(assembly_data.getValue("method_details", index_asmb))
     
@@ -251,7 +251,7 @@ def parseAssemblies(data,chids):
             print('Error in processing assembly')           
             return xforms
         
-        xforms.update({'asmb_xform%d'%(index):xform})
+        xforms.update({'asmb_xform%d'%(index): xform})
     
     xforms['asmb_chains'] = chains
     xforms['asmb_details'] = details
@@ -269,7 +269,7 @@ def parse_mmcif(filename):
 
     # read a gzipped .cif file
     data = []
-    with gzip.open(filename,'rt') as cif:
+    with gzip.open(filename, 'rt') as cif:
         reader = PdbxReader(cif)
         reader.read(data)
     data = data[0]
@@ -281,7 +281,7 @@ def parse_mmcif(filename):
     # map chain entity to chain ID
     entity_poly = data.getObj('entity_poly')
     if entity_poly is None:
-        return {},{}
+        return {}, {}
 
     pdbx_poly_seq_scheme = data.getObj('pdbx_poly_seq_scheme')
     pdb2asym = dict({
@@ -290,13 +290,13 @@ def parse_mmcif(filename):
         for r in data.getObj('pdbx_poly_seq_scheme').getRowList()
     })
 
-    chs2num = {pdb2asym[ch]:r[entity_poly.getIndex('entity_id')] 
+    chs2num = {pdb2asym[ch]: r[entity_poly.getIndex('entity_id')] 
                for r in entity_poly.getRowList() 
                for ch in r[entity_poly.getIndex('pdbx_strand_id')].split(',')
                if r[entity_poly.getIndex('type')]=='polypeptide(L)'}
 
     # get canonical sequences for polypeptide chains
-    num2seq = {r[entity_poly.getIndex('entity_id')]:r[entity_poly.getIndex('pdbx_seq_one_letter_code_can')].replace('\n','') 
+    num2seq = {r[entity_poly.getIndex('entity_id')]: r[entity_poly.getIndex('pdbx_seq_one_letter_code_can')].replace('\n', '') 
                for r in entity_poly.getRowList() 
                if r[entity_poly.getIndex('type')]=='polypeptide(L)'}
     
@@ -318,18 +318,18 @@ def parse_mmcif(filename):
         modres = dict({(r[pdbx_struct_mod_residue.getIndex('label_comp_id')],
                         r[pdbx_struct_mod_residue.getIndex('parent_comp_id')])
                        for r in pdbx_struct_mod_residue.getRowList()})
-        for k,v in modres.items():
-            print("# non-standard residue: %s %s"%(k,v))
+        for k, v in modres.items():
+            print("# non-standard residue: %s %s"%(k, v))
 
     # initialize dict of chains
-    for c,n in chs2num.items():
+    for c, n in chs2num.items():
         seq = num2seq[n]
         L = len(seq)
         chains.update({c : {'seq'  : seq,
-                            'xyz'  : np.full((L,14,3),np.nan,dtype=np.float32),
-                            'mask' : np.zeros((L,14),dtype=bool),
-                            'bfac' : np.full((L,14),np.nan,dtype=np.float32),
-                            'occ'  : np.zeros((L,14),dtype=np.float32) }})
+                            'xyz'  : np.full((L, 14, 3), np.nan, dtype=np.float32),
+                            'mask' : np.zeros((L, 14), dtype=bool),
+                            'bfac' : np.full((L, 14), np.nan, dtype=np.float32),
+                            'occ'  : np.zeros((L, 14), dtype=np.float32) }})
 
 
     #
@@ -338,7 +338,7 @@ def parse_mmcif(filename):
 
     # get indices of fields of interest
     atom_site = data.getObj('atom_site')
-    i = {k:atom_site.getIndex(val) for k,val in [('atm', 'label_atom_id'), # atom name
+    i = {k: atom_site.getIndex(val) for k, val in [('atm', 'label_atom_id'), # atom name
                                                  ('atype', 'type_symbol'), # atom chemical type
                                                  ('res', 'label_comp_id'), # residue name (3-letter)
                                                  #('chid', 'auth_asym_id'), # chain ID
@@ -369,10 +369,10 @@ def parse_mmcif(filename):
         
         # parse atom
         atm, res, chid, num, alt, x, y, z, occ, Bfac, model = \
-                (t(a[i[k]]) for k,t in (('atm',str), ('res',str), ('chid',str), 
-                ('num',int), ('alt',str),
-                ('x',float), ('y',float), ('z',float), 
-                ('occ',float), ('bfac',float), ('model',int)))
+                (t(a[i[k]]) for k, t in (('atm', str), ('res', str), ('chid', str), 
+                ('num', int), ('alt', str),
+                ('x', float), ('y', float), ('z', float), 
+                ('occ', float), ('bfac', float), ('model', int)))
 
 
         #print(atm, res, chid, num, alt, x, y, z, occ, Bfac, model)
@@ -390,7 +390,7 @@ def parse_mmcif(filename):
                 res = 'GLY'
             
         # skip if not a standard residue/atom
-        if (res,atm) not in aa2idx.keys():
+        if (res, atm) not in aa2idx.keys():
             continue
 
         # skip everything except model #1
@@ -398,9 +398,9 @@ def parse_mmcif(filename):
             continue
 
         # populate chians using max occup atoms
-        idx = (num-1, aa2idx[(res,atm)])
+        idx = (num-1, aa2idx[(res, atm)])
         if occ > c['occ'][idx]:
-            c['xyz'][idx] = [x,y,z]
+            c['xyz'][idx] = [x, y, z]
             c['mask'][idx] = True
             c['occ'][idx] = occ
             c['bfac'][idx] = Bfac
@@ -413,31 +413,31 @@ def parse_mmcif(filename):
     res = None
     if data.getObj('refine') is not None:
         try:
-            res = float(data.getObj('refine').getValue('ls_d_res_high',0))
+            res = float(data.getObj('refine').getValue('ls_d_res_high', 0))
         except:
             res = None
         
     if (data.getObj('em_3d_reconstruction') is not None) and (res is None):
         try:
-            res = float(data.getObj('em_3d_reconstruction').getValue('resolution',0))
+            res = float(data.getObj('em_3d_reconstruction').getValue('resolution', 0))
         except:
             res = None
     
     chids = list(chains.keys())
     seq = []
     for ch in chids:
-        mask = chains[ch]['mask'][:,:3].sum(1)==3
+        mask = chains[ch]['mask'][:, :3].sum(1)==3
         ref_seq = chains[ch]['seq']
-        atom_seq = ''.join([a if m else '-' for a,m in zip(ref_seq,mask)])
-        seq.append([ref_seq,atom_seq])
+        atom_seq = ''.join([a if m else '-' for a, m in zip(ref_seq, mask)])
+        seq.append([ref_seq, atom_seq])
 
     metadata = {
-        'method'     : data.getObj('exptl').getValue('method',0).replace(' ','_'),
-        'date'       : data.getObj('pdbx_database_status').getValue('recvd_initial_deposition_date',0),
+        'method'     : data.getObj('exptl').getValue('method', 0).replace(' ', '_'),
+        'date'       : data.getObj('pdbx_database_status').getValue('recvd_initial_deposition_date', 0),
         'resolution' : res,
         'chains'     : chids,
         'seq'        : seq,
-        'id'         : data.getObj('entry').getValue('id',0)
+        'id'         : data.getObj('entry').getValue('id', 0)
     }
     
 
@@ -445,7 +445,7 @@ def parse_mmcif(filename):
     # assemblies
     #
 
-    asmbs = parseAssemblies(data,chains)
+    asmbs = parseAssemblies(data, chains)
     metadata.update(asmbs)
 
     return chains, metadata
@@ -454,7 +454,7 @@ def parse_mmcif(filename):
 IN = sys.argv[1]
 OUT = sys.argv[2]
 
-chains,metadata = parse_mmcif(IN)
+chains, metadata = parse_mmcif(IN)
 ID = metadata['id']
 
 tm_pairs = get_tm_pairs(chains)
@@ -464,25 +464,25 @@ if 'chains' in metadata.keys() and len(metadata['chains'])>0:
     for a in chids:
         tm_a = []
         for b in chids:
-            tm_ab = tm_pairs[(a,b)]
+            tm_ab = tm_pairs[(a, b)]
             if tm_ab is None:
-                tm_a.append([0.0,0.0,999.9])
+                tm_a.append([0.0, 0.0, 999.9])
             else:
-                tm_a.append([tm_ab[k] for k in ['tm','seqid','rmsd']])
+                tm_a.append([tm_ab[k] for k in ['tm', 'seqid', 'rmsd']])
         tm.append(tm_a)
-    metadata.update({'tm':tm})
+    metadata.update({'tm': tm})
 
-for k,v in chains.items():
-    nres = (v['mask'][:,:3].sum(1)==3).sum()
-    print(">%s_%s %s %s %s %d %d\n%s"%(ID,k,metadata['date'],metadata['method'],
-                                       metadata['resolution'],len(v['seq']),nres,v['seq']))
+for k, v in chains.items():
+    nres = (v['mask'][:, :3].sum(1)==3).sum()
+    print(">%s_%s %s %s %s %d %d\n%s"%(ID, k, metadata['date'], metadata['method'],
+                                       metadata['resolution'], len(v['seq']), nres, v['seq']))
     
-    torch.save({kc:torch.Tensor(vc) if kc!='seq' else str(vc)
-                for kc,vc in v.items()}, f"{OUT}_{k}.pt")
+    torch.save({kc: torch.Tensor(vc) if kc!='seq' else str(vc)
+                for kc, vc in v.items()}, f"{OUT}_{k}.pt")
 
 meta_pt = {}
-for k,v in metadata.items():
+for k, v in metadata.items():
     if "asmb_xform" in k or k=="tm":
         v = torch.Tensor(v)
-    meta_pt.update({k:v})
+    meta_pt.update({k: v})
 torch.save(meta_pt, f"{OUT}.pt")

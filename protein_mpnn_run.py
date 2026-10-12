@@ -250,8 +250,8 @@ def main(args):
                     global_native_score_list = []
                     if fc > 0:
                         input_seq_length = len(fasta_seqs[fc-1])
-                        S_input = torch.tensor([alphabet_dict[AA] for AA in fasta_seqs[fc-1]], device=device)[None,:].repeat(X.shape[0], 1)
-                        S[:,:input_seq_length] = S_input #assumes that S and S_input are alphabetically sorted for masked_chains
+                        S_input = torch.tensor([alphabet_dict[AA] for AA in fasta_seqs[fc-1]], device=device)[None, :].repeat(X.shape[0], 1)
+                        S[:, :input_seq_length] = S_input #assumes that S and S_input are alphabetically sorted for masked_chains
                     for j in range(NUM_BATCHES):
                         randn_1 = torch.randn(chain_M.shape, device=X.device)
                         log_probs = model(X, S, mask, chain_M*chain_M_pos, residue_idx, chain_encoding_all, randn_1)
@@ -345,7 +345,7 @@ def main(args):
                             for b_ix in range(BATCH_COPIES):
                                 masked_chain_length_list = masked_chain_length_list_list[b_ix]
                                 masked_list = masked_list_list[b_ix]
-                                seq_recovery_rate = torch.sum(torch.sum(torch.nn.functional.one_hot(S[b_ix], 21)*torch.nn.functional.one_hot(S_sample[b_ix], 21),axis=-1)*mask_for_loss[b_ix])/torch.sum(mask_for_loss[b_ix])
+                                seq_recovery_rate = torch.sum(torch.sum(torch.nn.functional.one_hot(S[b_ix], 21)*torch.nn.functional.one_hot(S_sample[b_ix], 21), axis=-1)*mask_for_loss[b_ix])/torch.sum(mask_for_loss[b_ix])
                                 seq = _S_to_seq(S_sample[b_ix], chain_M[b_ix])
                                 score = scores[b_ix]
                                 score_list.append(score)
@@ -400,7 +400,7 @@ def main(args):
                                 global_score_print = np.format_float_positional(np.float32(global_score), unique=False, precision=4)
                                 seq_rec_print = np.format_float_positional(np.float32(seq_recovery_rate.detach().cpu().numpy()), unique=False, precision=4)
                                 sample_number = j*BATCH_COPIES+b_ix+1
-                                f.write('>T={}, sample={}, score={}, global_score={}, seq_recovery={}\n{}\n'.format(temp,sample_number,score_print,global_score_print,seq_rec_print,seq)) #write generated sequence
+                                f.write('>T={}, sample={}, score={}, global_score={}, seq_recovery={}\n{}\n'.format(temp, sample_number, score_print, global_score_print, seq_rec_print, seq)) #write generated sequence
                 if args.save_score:
                     np.savez(score_file, score=np.array(score_list, np.float32), global_score=np.array(global_score_list, np.float32))
                 if args.save_probs:
@@ -450,7 +450,7 @@ if __name__ == "__main__":
     argparser.add_argument("--pdb_path", type=str, default='', help="Path to a single PDB to be designed")
     argparser.add_argument("--pdb_path_chains", type=str, default='', help="Define which chains need to be designed for a single PDB ")
     argparser.add_argument("--jsonl_path", type=str, help="Path to a folder with parsed pdb into jsonl")
-    argparser.add_argument("--chain_id_jsonl",type=str, default='', help="Path to a dictionary specifying which chains need to be designed and which ones are fixed, if not specied all chains will be designed.")
+    argparser.add_argument("--chain_id_jsonl", type=str, default='', help="Path to a dictionary specifying which chains need to be designed and which ones are fixed, if not specied all chains will be designed.")
     argparser.add_argument("--fixed_positions_jsonl", type=str, default='', help="Path to a dictionary with fixed positions")
     argparser.add_argument("--omit_AAs", type=list, default='X', help="Specify which amino acids should be omitted in the generated sequence, e.g. 'AC' would omit alanine and cystine.")
     argparser.add_argument("--bias_AA_jsonl", type=str, default='', help="Path to a dictionary which specifies AA composion bias if neededi, e.g. {A: -1.1, F: 0.7} would make A less likely and F more likely.")

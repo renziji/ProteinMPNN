@@ -56,7 +56,7 @@ def main(args):
 
     LOAD_PARAM = {'batch_size': 1,
                   'shuffle': True,
-                  'pin_memory':False,
+                  'pin_memory': False,
                   'num_workers': 4}
 
    

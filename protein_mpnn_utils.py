@@ -16,7 +16,7 @@ import itertools
 
 #A number of functions/classes are adopted from: https://github.com/jingraham/neurips19-graph-protein-design
 
-def parse_fasta(filename,limit=-1, omit=[]):
+def parse_fasta(filename, limit=-1, omit=[]):
     header = []
     sequence = []
     lines = open(filename, "r")
@@ -41,7 +41,7 @@ def _scores(S, log_probs, mask):
     """ Negative log probabilities """
     criterion = torch.nn.NLLLoss(reduction='none')
     loss = criterion(
-        log_probs.contiguous().view(-1,log_probs.size(-1)),
+        log_probs.contiguous().view(-1, log_probs.size(-1)),
         S.contiguous().view(-1)
     ).view(S.size())
     scores = torch.sum(loss * mask, dim=-1) / torch.sum(mask, dim=-1)
@@ -52,163 +52,142 @@ def _S_to_seq(S, mask):
     seq = ''.join([alphabet[c] for c, m in zip(S.tolist(), mask.tolist()) if m > 0])
     return seq
 
-def parse_PDB_biounits(x, atoms=['N','CA','C'], chain=None):
+def parse_PDB_biounits(
+    pdb_path: str,
+    atom_names: list[str] = ['N', 'CA', 'C', 'O'],
+    chain: str | None = None,
+) -> tuple[np.ndarray, str] | tuple[None, None]:
     '''
     Parse one chain from a PDB file and extract atom coordinates plus the sequence.
 
     Args:
-            x:     path to the PDB file (text format).
-            atoms: list of atom names to extract, in output order.
-                          Default ['N','CA','C'] (protein backbone); other common choice: ['N','CA','C','O'].
-            chain: single chain ID to extract (e.g. 'A'). If None, atoms from ALL chains are returned.
+        pdb_path: path to the PDB file (text format).
+        atom_names: list of atom names to extract, in output order.
+                        Default ['N','CA','C','O'] (full protein backbone, required by the model).
+        chain: single chain ID to extract (e.g. 'A'). If None, atoms from ALL chains are returned.
 
     Returns:
-            xyz: numpy array of shape (n_residues, len(atoms), 3), 0-based residue indexing.
-                      Residues/atoms missing from the file are filled with NaN.
-            seq: list of strings; usually [one_string] where the string is the amino-acid
-                      sequence in one-letter codes, with '-' for missing/unknown residues.
+        coords_array: numpy array of shape (n_residues, len(atom_names), 3), 0-based residue indexing.
+                    Residues/atoms missing from the file are filled with NaN.
+        seq: the amino-acid sequence in one-letter codes,
+                    with '-' for missing/unknown residues.
 
-            If no ATOM record matches the requested chain, returns the pair ('no_chain', 'no_chain').
+        If no ATOM record matches the requested chain, returns (None, None).
 
     Notes:
-            - Residue numbers are converted from 1-based PDB numbering to 0-based.
-            - Insertion codes (e.g. residue "100A") are kept as separate sub-entries, sorted after the base residue.
-            - Selenomethionine (MSE, a HETATM record) is converted to standard MET and included.
+        - Residue numbers are converted from 1-based PDB numbering to 0-based.
+        - Insertion codes (e.g. residue "100A") are kept as separate sub-entries, sorted after the base residue.
+        - Selenomethionine (MSE, a HETATM record) is converted to standard MET and included.
     '''
 
     # single source of truth: 1-letter code -> 3-letter residue name.
-    # Insertion order defines the numeric encoding (index 0..20);
     # '-'/GAP marks gaps and unknown residues.
-    # NOTE: this order is baked into the model weights — do not reorder.
+    # Only key lookups are performed on this mapping, so entry order does not
+    # affect correctness; the ARNDC... order is kept for readability and to
+    # match the upstream ProteinMPNN convention. The model's actual encoding
+    # alphabet ('ACDEFGHIKLMNPQRSTVWYX') lives in tied_featurize, not here.
     amino_acid_one_to_three = {
-            'A':'ALA', 'R':'ARG', 'N':'ASN', 'D':'ASP', 'C':'CYS',
-            'Q':'GLN', 'E':'GLU', 'G':'GLY', 'H':'HIS', 'I':'ILE',
-            'L':'LEU', 'K':'LYS', 'M':'MET', 'F':'PHE', 'P':'PRO',
-            'S':'SER', 'T':'THR', 'W':'TRP', 'Y':'TYR', 'V':'VAL', '-':'GAP',
+        'A': 'ALA', 'R': 'ARG', 'N': 'ASN', 'D': 'ASP', 'C': 'CYS',
+        'Q': 'GLN', 'E': 'GLU', 'G': 'GLY', 'H': 'HIS', 'I': 'ILE',
+        'L': 'LEU', 'K': 'LYS', 'M': 'MET', 'F': 'PHE', 'P': 'PRO',
+        'S': 'SER', 'T': 'THR', 'W': 'TRP', 'Y': 'TYR', 'V': 'VAL', '-': 'GAP',
     }
 
-    # derived views (dicts preserve insertion order, so indices stay consistent)
-    one_letter_alphabet = list(amino_acid_one_to_three.keys())
-    three_letter_alphabet = list(amino_acid_one_to_three.values())
-    # number of states = 21 (20 amino acids + 1 gap symbol)
-    states = len(amino_acid_one_to_three)
+    # inverse mapping: 3-letter residue name -> 1-letter code (e.g. 'ALA'->'A', 'GAP'->'-')
+    three_to_one_letter = {three: one for one, three in amino_acid_one_to_three.items()}
 
-    # 1-letter code -> numeric index (e.g. 'A'->0, '-'->20)
-    one_letter_to_index = {code:index for index,code in enumerate(one_letter_alphabet)}
-    # 3-letter code -> numeric index (e.g. 'ALA'->0, 'GAP'->20)
-    three_letter_to_index = {code:index for index,code in enumerate(three_letter_alphabet)}
-    # numeric index -> 1-letter code (inverse of one_letter_to_index)
-    index_to_one_letter = {index:code for index,code in enumerate(one_letter_alphabet)}
-    # 3-letter -> 1-letter mapping (inverse of amino_acid_one_to_three)
-    three_to_one_letter = {three:one for one,three in amino_acid_one_to_three.items()}
-    
-    def sequence_to_indices(x):
-        # ["ARND"] -> [[0,1,2,3]]
-        # normalize the input into a numpy array
-        x = np.array(x);
-        # wrap 0-d input into 1-d so the loop below is uniform
-        if x.ndim == 0: x = x[None]
-        # map each 1-letter code to its numeric index; unknown characters fall back to the gap state
-        return [[one_letter_to_index.get(a, states-1) for a in y] for y in x]
-    
-    def indices_to_sequence(x):
-        # [[0,1,2,3]] -> ["ARND"]
-        # normalize the input into a numpy array
-        x = np.array(x);
-        # wrap 1-d input into 2-d so the loop below iterates over rows uniformly
-        if x.ndim == 1: x = x[None]
-        # map each numeric index back to a 1-letter code and join each row into a sequence string
-        return ["".join([index_to_one_letter.get(a,"-") for a in y]) for y in x]
-
-    # xyz/seq hold per-residue data; min/max track the residue-number range seen so far
-    xyz,seq,min_resn,max_resn = {},{},1e6,-1e6
+    # atom_coords_dict/residue_names_dict hold per-residue data; min/max track the residue-number range seen so far
+    atom_coords_dict, residue_names_dict, min_residue_number, max_residue_number = {}, {}, 1e6, -1e6
     # read the PDB file line by line in binary mode
-    for line in open(x,"rb"):
-        # decode bytes to text (ignoring undecodable characters) and strip the trailing newline
-        line = line.decode("utf-8","ignore").rstrip()
+    with open(pdb_path, "rb") as pdb_file:
+        for line in pdb_file:
+            # decode bytes to text (ignoring undecodable characters) and strip the trailing newline
+            line = line.decode("utf-8", "ignore").rstrip()
 
-        # selenomethionine (MSE) is a MET-like residue recorded as HETATM; rewrite it as standard ATOM/MET
-        if line[:6] == "HETATM" and line[17:17+3] == "MSE":
-            # change the record type so the ATOM branch below accepts this line
-            line = line.replace("HETATM","ATOM  ")
-            # rename the residue to standard methionine
-            line = line.replace("MSE","MET")
+            # selenomethionine (MSE) is a MET-like residue recorded as HETATM; rewrite it as standard ATOM/MET
+            if line[:6] == "HETATM" and line[17:17+3] == "MSE":
+                # change the record type so the ATOM branch below accepts this line
+                line = line.replace("HETATM", "ATOM  ")
+                # rename the residue to standard methionine
+                line = line.replace("MSE", "MET")
 
-        # only coordinate records of type ATOM are parsed
-        if line[:4] == "ATOM":
-            # chain ID occupies column 22 (0-based index 21)
-            ch = line[21:22]
-            # process the line only if it belongs to the requested chain (or no chain filter is set)
-            if ch == chain or chain is None:
-                # atom name occupies columns 13-16, stripped of padding spaces
-                atom = line[12:12+4].strip()
-                # residue name (3 letters) occupies columns 18-20
-                resi = line[17:17+3]
-                # residue sequence number + optional insertion code occupy columns 23-27
-                resn = line[22:22+5].strip()
-                # x, y, z are fixed-width 8-character fields starting at columns 31, 39, 47
-                x,y,z = [float(line[i:(i+8)]) for i in [30,38,46]]
+            # only coordinate records of type ATOM are parsed
+            if line[:4] == "ATOM":
+                # chain ID occupies column 22 (0-based index 21)
+                ch = line[21:22]
+                # process the line only if it belongs to the requested chain (or no chain filter is set)
+                if ch == chain or chain is None:
+                    # atom name occupies columns 13-16, stripped of padding spaces
+                    atom_name = line[12:12+4].strip()
+                    # residue name (3 letters) occupies columns 18-20
+                    residue_name = line[17:17+3]
+                    # residue sequence number + optional insertion code occupy columns 23-27
+                    residue_number = line[22:22+5].strip()
+                    # x, y, z are fixed-width 8-character fields starting at columns 31, 39, 47
+                    x, y, z = [float(line[i:(i+8)]) for i in [30, 38, 46]]
 
-                # insertion codes (e.g. residue "100A") appear as a trailing letter on the residue field
-                if resn[-1].isalpha():
+                    # insertion codes (e.g. residue "100A") appear as a trailing letter on the residue field
+                    if residue_number[-1].isalpha():
                         # split into insertion code + 0-based residue number
-                        resa,resn = resn[-1],int(resn[:-1])-1
-                else:
+                        insertion_code, residue_number = residue_number[-1], int(residue_number[:-1])-1
+                    else:
                         # no insertion code; convert the 1-based PDB numbering to 0-based
-                        resa,resn = "",int(resn)-1
-#         resn = int(resn)
-                # update the lowest residue number seen
-                if resn < min_resn:
-                        min_resn = resn
-                # update the highest residue number seen
-                if resn > max_resn:
-                        max_resn = resn
-                # create the per-residue dict on first encounter
-                if resn not in xyz:
-                        xyz[resn] = {}
-                # insertion-code sub-level (handles residues that share the same number)
-                if resa not in xyz[resn]:
-                        xyz[resn][resa] = {}
-                # mirror structure for the sequence dict
-                if resn not in seq:
-                        seq[resn] = {}
-                # record the residue's 3-letter name once per (residue, insertion code) pair
-                if resa not in seq[resn]:
-                        seq[resn][resa] = resi
+                        insertion_code, residue_number = "", int(residue_number)-1
+                    # update the lowest residue number seen
+                    min_residue_number = min(min_residue_number, residue_number)
+                    # update the highest residue number seen
+                    max_residue_number = max(max_residue_number, residue_number)
+                    # create the per-residue dict on first encounter
+                    if residue_number not in atom_coords_dict:
+                        atom_coords_dict[residue_number] = {}
+                    # insertion-code sub-level (handles residues that share the same number)
+                    if insertion_code not in atom_coords_dict[residue_number]:
+                        atom_coords_dict[residue_number][insertion_code] = {}
+                    # mirror structure for the sequence dict
+                    if residue_number not in residue_names_dict:
+                        residue_names_dict[residue_number] = {}
+                    # record the residue's 3-letter name once per (residue, insertion code) pair
+                    if insertion_code not in residue_names_dict[residue_number]:
+                        residue_names_dict[residue_number][insertion_code] = residue_name
 
-                # keep only the first occurrence of each atom (handles duplicate/alternate locations)
-                if atom not in xyz[resn][resa]:
-                    # store the atom's (x, y, z) as a small numpy array
-                    xyz[resn][resa][atom] = np.array([x,y,z])
+                    # keep only the first occurrence of each atom_name (handles duplicate/alternate locations)
+                    if atom_name not in atom_coords_dict[residue_number][insertion_code]:
+                        # store the atom_name's (x, y, z) as a small numpy array
+                        atom_coords_dict[residue_number][insertion_code][atom_name] = np.array([x, y, z])
 
-    # convert to numpy arrays, fill in missing values
-    # seq_ collects numeric residue states; xyz_ collects flat atom coordinates
-    seq_,xyz_ = [],[]
+    # build the output: collect 1-letter sequence chars and flat atom coordinates
+    sequence_chars, flat_atom_coordinates = [], []
     try:
-            # walk every residue number from lowest to highest (gaps get filled below)
-            for resn in range(min_resn,max_resn+1):
-                # residue present: convert each of its insertion-code entries to a numeric state
-                if resn in seq:
-                    for k in sorted(seq[resn]): seq_.append(three_letter_to_index.get(seq[resn][k],20))
-                # residue number missing entirely: use the GAP state (index 20)
-                else: seq_.append(20)
-                # residue has coordinates: emit them in the requested atom order
-                if resn in xyz:
-                    for k in sorted(xyz[resn]):
-                        for atom in atoms:
-                            # atom present: use its stored coordinates
-                            if atom in xyz[resn][k]: xyz_.append(xyz[resn][k][atom])
-                            # atom absent: fill with NaN so the output shape stays consistent
-                            else: xyz_.append(np.full(3,np.nan))
-                # residue missing from the coordinate data: fill all requested atoms with NaN
-                else:
-                    for atom in atoms: xyz_.append(np.full(3,np.nan))
-            # reshape flat coordinates to (n_residues, n_atoms, 3) and decode states to a letter sequence
-            return np.array(xyz_).reshape(-1,len(atoms),3), indices_to_sequence(np.array(seq_))
+        # walk every residue number from lowest to highest (gaps get filled below)
+        for residue_number in range(min_residue_number, max_residue_number+1):
+            # residue present: convert 3-letter name directly to 1-letter code
+            if residue_number in residue_names_dict:
+                for insertion_code in sorted(residue_names_dict[residue_number]):
+                    three_letter = residue_names_dict[residue_number][insertion_code]
+                    sequence_chars.append(three_to_one_letter.get(three_letter, '-'))
+            # residue number missing entirely: use '-' for gap
+            else:
+                sequence_chars.append('-')
+            # residue has coordinates: emit them in the requested atom_name order
+            if residue_number in atom_coords_dict:
+                for insertion_code in sorted(atom_coords_dict[residue_number]):
+                    for atom_name in atom_names:
+                        # atom_name present: use its stored coordinates
+                        if atom_name in atom_coords_dict[residue_number][insertion_code]:
+                            flat_atom_coordinates.append(atom_coords_dict[residue_number][insertion_code][atom_name])
+                        # atom_name absent: fill with NaN so the output shape stays consistent
+                        else:
+                            flat_atom_coordinates.append(np.full(3, np.nan))
+            # residue missing from the coordinate data: fill all requested atom_names with NaN
+            else:
+                for atom_name in atom_names:
+                    flat_atom_coordinates.append(np.full(3, np.nan))
+        # reshape flat_atom_coordinates to (n_residues, n_atoms, 3); join chars into one sequence string
+        return np.array(flat_atom_coordinates).reshape(-1, len(atom_names), 3), "".join(sequence_chars)
     # TypeError occurs when no ATOM records matched (min/max stay at float sentinels, so range() fails)
     except TypeError:
-            # signal "chain not found" to the caller
-            return 'no_chain', 'no_chain'
+        # signal "chain not found" to the caller
+        return None, None
 
 def parse_PDB(path_to_pdb, input_chain_list=None, ca_only=False):
     # Parse a single PDB file and return a list of dicts with sequence and backbone coordinates.
@@ -254,28 +233,26 @@ def parse_PDB(path_to_pdb, input_chain_list=None, ca_only=False):
             else:
                 sidechain_atoms = ['N', 'CA', 'C', 'O']
             # call the low-level parser: filter the PDB text by chain and atom names
-            # returns xyz: shape (n_residues, n_atoms, 3) coordinate array; seq: amino-acid sequence string
-            # if the chain does not exist, xyz is returned as a placeholder string (type check signals "not found")
-            xyz, seq = parse_PDB_biounits(biounit, atoms=sidechain_atoms, chain=letter)
-            # only write to the dict when xyz is not a string, i.e. the chain actually exists
-            if type(xyz) != str:
+            # returns coords_array: shape (n_residues, n_atoms, 3) coordinate array; seq: amino-acid sequence string
+            # if the chain does not exist, returns (None, None)
+            coords_array, seq = parse_PDB_biounits(biounit, atom_names=sidechain_atoms, chain=letter)
+            # only write to the dict when coords_array is not None, i.e. the chain actually exists
+            if coords_array is not None:
                 # append this chain's sequence to the concatenated full sequence
-                # note: seq is a LIST of strings returned by parse_PDB_biounits (via indices_to_sequence),
-                # normally holding exactly one element; seq[0] is the actual sequence string
-                concat_seq += seq[0]
+                concat_seq += seq
                 # store this chain's sequence under a key like 'seq_chain_A'
-                my_dict['seq_chain_'+letter]=seq[0]
+                my_dict['seq_chain_'+letter] = seq
                 # initialize the coordinate sub-dict for this chain
                 coords_dict_chain = {}
                 # coarse-grained mode: store only C-alpha coordinates, shape (n_res, 3)
                 if ca_only:
-                    coords_dict_chain['CA_chain_'+letter]=xyz.tolist()
+                    coords_dict_chain['CA_chain_'+letter] = coords_array.tolist()
                 # full backbone mode: store N / CA / C / O coordinates separately, each shape (n_res, 3)
                 else:
-                    coords_dict_chain['N_chain_' + letter] = xyz[:, 0, :].tolist()
-                    coords_dict_chain['CA_chain_' + letter] = xyz[:, 1, :].tolist()
-                    coords_dict_chain['C_chain_' + letter] = xyz[:, 2, :].tolist()
-                    coords_dict_chain['O_chain_' + letter] = xyz[:, 3, :].tolist()
+                    coords_dict_chain['N_chain_' + letter] = coords_array[:, 0, :].tolist()
+                    coords_dict_chain['CA_chain_' + letter] = coords_array[:, 1, :].tolist()
+                    coords_dict_chain['C_chain_' + letter] = coords_array[:, 2, :].tolist()
+                    coords_dict_chain['O_chain_' + letter] = coords_array[:, 3, :].tolist()
                 # attach this chain's coordinate sub-dict to the main dict under 'coords_chain_A' etc.
                 my_dict['coords_chain_'+letter]=coords_dict_chain
                 # increment the parsed-chain counter
@@ -368,7 +345,7 @@ def tied_featurize(batch, device, chain_dict, fixed_position_dict=None, omit_AA_
                 if ca_only:
                     x_chain = np.array(chain_coords[f'CA_chain_{letter}']) #[chain_lenght,1,3] #CA_diff
                     if len(x_chain.shape) == 2:
-                        x_chain = x_chain[:,None,:]
+                        x_chain = x_chain[:, None, :]
                 else:
                     x_chain = np.stack([chain_coords[c] for c in [f'N_chain_{letter}', f'CA_chain_{letter}', f'C_chain_{letter}', f'O_chain_{letter}']], 1) #[chain_lenght,4,3]
                 x_chain_list.append(x_chain)
@@ -403,7 +380,7 @@ def tied_featurize(batch, device, chain_dict, fixed_position_dict=None, omit_AA_
                 if ca_only:
                     x_chain = np.array(chain_coords[f'CA_chain_{letter}']) #[chain_lenght,1,3] #CA_diff
                     if len(x_chain.shape) == 2:
-                        x_chain = x_chain[:,None,:]
+                        x_chain = x_chain[:, None, :]
                 else:
                     x_chain = np.stack([chain_coords[c] for c in [f'N_chain_{letter}', f'CA_chain_{letter}', f'C_chain_{letter}', f'O_chain_{letter}']], 1) #[chain_lenght,4,3]               
                 x_chain_list.append(x_chain)
@@ -426,7 +403,7 @@ def tied_featurize(batch, device, chain_dict, fixed_position_dict=None, omit_AA_
                         idx_AA = np.array(item[0])-1
                         AA_idx = np.array([np.argwhere(np.array(list(alphabet))== AA)[0][0] for AA in item[1]]).repeat(idx_AA.shape[0])
                         idx_ = np.array([[a, b] for a in idx_AA for b in AA_idx])
-                        omit_AA_mask_temp[idx_[:,0], idx_[:,1]] = 1
+                        omit_AA_mask_temp[idx_[:, 0], idx_[:, 1]] = 1
                 omit_AA_mask_list.append(omit_AA_mask_temp)
                 pssm_coef = np.zeros(chain_length)
                 pssm_bias = np.zeros([chain_length, 21])
@@ -468,42 +445,42 @@ def tied_featurize(batch, device, chain_dict, fixed_position_dict=None, omit_AA_
 
 
  
-        x = np.concatenate(x_chain_list,0) #[L, 4, 3]
+        x = np.concatenate(x_chain_list, 0) #[L, 4, 3]
         all_sequence = "".join(chain_seq_list)
-        m = np.concatenate(chain_mask_list,0) #[L,], 1.0 for places that need to be predicted
-        chain_encoding = np.concatenate(chain_encoding_list,0)
-        m_pos = np.concatenate(fixed_position_mask_list,0) #[L,], 1.0 for places that need to be predicted
+        m = np.concatenate(chain_mask_list, 0) #[L,], 1.0 for places that need to be predicted
+        chain_encoding = np.concatenate(chain_encoding_list, 0)
+        m_pos = np.concatenate(fixed_position_mask_list, 0) #[L,], 1.0 for places that need to be predicted
 
-        pssm_coef_ = np.concatenate(pssm_coef_list,0) #[L,], 1.0 for places that need to be predicted
-        pssm_bias_ = np.concatenate(pssm_bias_list,0) #[L,], 1.0 for places that need to be predicted
-        pssm_log_odds_ = np.concatenate(pssm_log_odds_list,0) #[L,], 1.0 for places that need to be predicted
+        pssm_coef_ = np.concatenate(pssm_coef_list, 0) #[L,], 1.0 for places that need to be predicted
+        pssm_bias_ = np.concatenate(pssm_bias_list, 0) #[L,], 1.0 for places that need to be predicted
+        pssm_log_odds_ = np.concatenate(pssm_log_odds_list, 0) #[L,], 1.0 for places that need to be predicted
 
         bias_by_res_ = np.concatenate(bias_by_res_list, 0)  #[L,21], 0.0 for places where AA frequencies don't need to be tweaked
 
         l = len(all_sequence)
-        x_pad = np.pad(x, [[0,L_max-l], [0,0], [0,0]], 'constant', constant_values=(np.nan, ))
-        X[i,:,:,:] = x_pad
+        x_pad = np.pad(x, [[0, L_max-l], [0, 0], [0, 0]], 'constant', constant_values=(np.nan, ))
+        X[i, :, :, :] = x_pad
 
-        m_pad = np.pad(m, [[0,L_max-l]], 'constant', constant_values=(0.0, ))
-        m_pos_pad = np.pad(m_pos, [[0,L_max-l]], 'constant', constant_values=(0.0, ))
-        omit_AA_mask_pad = np.pad(np.concatenate(omit_AA_mask_list,0), [[0,L_max-l]], 'constant', constant_values=(0.0, ))
-        chain_M[i,:] = m_pad
-        chain_M_pos[i,:] = m_pos_pad
+        m_pad = np.pad(m, [[0, L_max-l]], 'constant', constant_values=(0.0, ))
+        m_pos_pad = np.pad(m_pos, [[0, L_max-l]], 'constant', constant_values=(0.0, ))
+        omit_AA_mask_pad = np.pad(np.concatenate(omit_AA_mask_list, 0), [[0, L_max-l]], 'constant', constant_values=(0.0, ))
+        chain_M[i, :] = m_pad
+        chain_M_pos[i, :] = m_pos_pad
         omit_AA_mask[i,] = omit_AA_mask_pad
 
-        chain_encoding_pad = np.pad(chain_encoding, [[0,L_max-l]], 'constant', constant_values=(0.0, ))
-        chain_encoding_all[i,:] = chain_encoding_pad
+        chain_encoding_pad = np.pad(chain_encoding, [[0, L_max-l]], 'constant', constant_values=(0.0, ))
+        chain_encoding_all[i, :] = chain_encoding_pad
 
-        pssm_coef_pad = np.pad(pssm_coef_, [[0,L_max-l]], 'constant', constant_values=(0.0, ))
-        pssm_bias_pad = np.pad(pssm_bias_, [[0,L_max-l], [0,0]], 'constant', constant_values=(0.0, ))
-        pssm_log_odds_pad = np.pad(pssm_log_odds_, [[0,L_max-l], [0,0]], 'constant', constant_values=(0.0, ))
+        pssm_coef_pad = np.pad(pssm_coef_, [[0, L_max-l]], 'constant', constant_values=(0.0, ))
+        pssm_bias_pad = np.pad(pssm_bias_, [[0, L_max-l], [0, 0]], 'constant', constant_values=(0.0, ))
+        pssm_log_odds_pad = np.pad(pssm_log_odds_, [[0, L_max-l], [0, 0]], 'constant', constant_values=(0.0, ))
 
-        pssm_coef_all[i,:] = pssm_coef_pad
-        pssm_bias_all[i,:] = pssm_bias_pad
-        pssm_log_odds_all[i,:] = pssm_log_odds_pad
+        pssm_coef_all[i, :] = pssm_coef_pad
+        pssm_bias_all[i, :] = pssm_bias_pad
+        pssm_log_odds_all[i, :] = pssm_log_odds_pad
 
-        bias_by_res_pad = np.pad(bias_by_res_, [[0,L_max-l], [0,0]], 'constant', constant_values=(0.0, ))
-        bias_by_res_all[i,:] = bias_by_res_pad
+        bias_by_res_pad = np.pad(bias_by_res_, [[0, L_max-l], [0, 0]], 'constant', constant_values=(0.0, ))
+        bias_by_res_all[i, :] = bias_by_res_pad
 
         # Convert to labels
         indices = np.asarray([alphabet.index(a) for a in all_sequence], dtype=np.int32)
@@ -515,7 +492,7 @@ def tied_featurize(batch, device, chain_dict, fixed_position_dict=None, omit_AA_
 
 
     isnan = np.isnan(X)
-    mask = np.isfinite(np.sum(X,(2,3))).astype(np.float32)
+    mask = np.isfinite(np.sum(X, (2, 3))).astype(np.float32)
     X[isnan] = 0.
 
     # Conversion
@@ -525,15 +502,15 @@ def tied_featurize(batch, device, chain_dict, fixed_position_dict=None, omit_AA_
 
     tied_beta = torch.from_numpy(tied_beta).to(dtype=torch.float32, device=device)
 
-    jumps = ((residue_idx[:,1:]-residue_idx[:,:-1])==1).astype(np.float32)
+    jumps = ((residue_idx[:, 1:]-residue_idx[:, :-1])==1).astype(np.float32)
     bias_by_res_all = torch.from_numpy(bias_by_res_all).to(dtype=torch.float32, device=device)
-    phi_mask = np.pad(jumps, [[0,0],[1,0]])
-    psi_mask = np.pad(jumps, [[0,0],[0,1]])
-    omega_mask = np.pad(jumps, [[0,0],[0,1]])
-    dihedral_mask = np.concatenate([phi_mask[:,:,None], psi_mask[:,:,None], omega_mask[:,:,None]], -1) #[B,L,3]
+    phi_mask = np.pad(jumps, [[0, 0], [1, 0]])
+    psi_mask = np.pad(jumps, [[0, 0], [0, 1]])
+    omega_mask = np.pad(jumps, [[0, 0], [0, 1]])
+    dihedral_mask = np.concatenate([phi_mask[:, :, None], psi_mask[:, :, None], omega_mask[:, :, None]], -1) #[B,L,3]
     dihedral_mask = torch.from_numpy(dihedral_mask).to(dtype=torch.float32, device=device)
-    residue_idx = torch.from_numpy(residue_idx).to(dtype=torch.long,device=device)
-    S = torch.from_numpy(S).to(dtype=torch.long,device=device)
+    residue_idx = torch.from_numpy(residue_idx).to(dtype=torch.long, device=device)
+    S = torch.from_numpy(S).to(dtype=torch.long, device=device)
     X = torch.from_numpy(X).to(dtype=torch.float32, device=device)
     mask = torch.from_numpy(mask).to(dtype=torch.float32, device=device)
     chain_M = torch.from_numpy(chain_M).to(dtype=torch.float32, device=device)
@@ -541,7 +518,7 @@ def tied_featurize(batch, device, chain_dict, fixed_position_dict=None, omit_AA_
     omit_AA_mask = torch.from_numpy(omit_AA_mask).to(dtype=torch.float32, device=device)
     chain_encoding_all = torch.from_numpy(chain_encoding_all).to(dtype=torch.long, device=device)
     if ca_only:
-        X_out = X[:,:,0]
+        X_out = X[:, :, 0]
     else:
         X_out = X
     return X_out, S, mask, lengths, chain_M, chain_encoding_all, letter_list_list, visible_list_list, masked_list_list, masked_chain_length_list_list, chain_M_pos, omit_AA_mask, residue_idx, dihedral_mask, tied_pos_list_of_lists_list, pssm_coef_all, pssm_bias_all, pssm_log_odds_all, bias_by_res_all, tied_beta
@@ -669,7 +646,7 @@ class StructureDatasetPDB():
     
 class StructureLoader():
     def __init__(self, dataset, batch_size=100, shuffle=True,
-        collate_fn=lambda x:x, drop_last=False):
+        collate_fn=lambda x: x, drop_last=False):
         self.dataset = dataset
         self.size = len(dataset)
         self.lengths = [len(dataset[i]['seq']) for i in range(self.size)]
@@ -757,7 +734,7 @@ class EncLayer(nn.Module):
         """ Parallel computation of full transformer layer """
 
         h_EV = cat_neighbors_nodes(h_V, h_E, E_idx)
-        h_V_expand = h_V.unsqueeze(-2).expand(-1,-1,h_EV.size(-2),-1)
+        h_V_expand = h_V.unsqueeze(-2).expand(-1, -1, h_EV.size(-2), -1)
         h_EV = torch.cat([h_V_expand, h_EV], -1)
         h_message = self.W3(self.act(self.W2(self.act(self.W1(h_EV)))))
         if mask_attend is not None:
@@ -772,7 +749,7 @@ class EncLayer(nn.Module):
             h_V = mask_V * h_V
 
         h_EV = cat_neighbors_nodes(h_V, h_E, E_idx)
-        h_V_expand = h_V.unsqueeze(-2).expand(-1,-1,h_EV.size(-2),-1)
+        h_V_expand = h_V.unsqueeze(-2).expand(-1, -1, h_EV.size(-2), -1)
         h_EV = torch.cat([h_V_expand, h_EV], -1)
         h_message = self.W13(self.act(self.W12(self.act(self.W11(h_EV)))))
         h_E = self.norm3(h_E + self.dropout3(h_message))
@@ -800,7 +777,7 @@ class DecLayer(nn.Module):
         """ Parallel computation of full transformer layer """
 
         # Concatenate h_V_i to h_E_ij
-        h_V_expand = h_V.unsqueeze(-2).expand(-1,-1,h_E.size(-2),-1)
+        h_V_expand = h_V.unsqueeze(-2).expand(-1, -1, h_E.size(-2), -1)
         h_EV = torch.cat([h_V_expand, h_E], -1)
 
         h_message = self.W3(self.act(self.W2(self.act(self.W1(h_EV)))))
@@ -884,11 +861,11 @@ class CA_ProteinFeatures(nn.Module):
             - Rxx + Ryy - Rzz, 
             - Rxx - Ryy + Rzz
         ], -1)))
-        _R = lambda i,j: R[:,:,:,i,j]
+        _R = lambda i, j: R[:, :, :, i, j]
         signs = torch.sign(torch.stack([
-            _R(2,1) - _R(1,2),
-            _R(0,2) - _R(2,0),
-            _R(1,0) - _R(0,1)
+            _R(2, 1) - _R(1, 2),
+            _R(0, 2) - _R(2, 0),
+            _R(1, 0) - _R(0, 1)
         ], -1))
         xyz = signs * magnitudes
         # The relu enforces a non-negative trace
@@ -898,14 +875,14 @@ class CA_ProteinFeatures(nn.Module):
         return Q
 
     def _orientations_coarse(self, X, E_idx, eps=1e-6):
-        dX = X[:,1:,:] - X[:,:-1,:]
-        dX_norm = torch.norm(dX,dim=-1)
+        dX = X[:, 1:, :] - X[:, :-1, :]
+        dX_norm = torch.norm(dX, dim=-1)
         dX_mask = (3.6<dX_norm) & (dX_norm<4.0) #exclude CA-CA jumps
-        dX = dX*dX_mask[:,:,None]
+        dX = dX*dX_mask[:, :, None]
         U = F.normalize(dX, dim=-1)
-        u_2 = U[:,:-2,:]
-        u_1 = U[:,1:-1,:]
-        u_0 = U[:,2:,:]
+        u_2 = U[:, :-2, :]
+        u_1 = U[:, 1:-1, :]
+        u_0 = U[:, 2:, :]
         # Backbone normals
         n_2 = F.normalize(torch.cross(u_2, u_1), dim=-1)
         n_1 = F.normalize(torch.cross(u_1, u_0), dim=-1)
@@ -920,29 +897,29 @@ class CA_ProteinFeatures(nn.Module):
         D = torch.sign((u_2 * n_1).sum(-1)) * torch.acos(cosD)
         # Backbone features
         AD_features = torch.stack((torch.cos(A), torch.sin(A) * torch.cos(D), torch.sin(A) * torch.sin(D)), 2)
-        AD_features = F.pad(AD_features, (0,0,1,2), 'constant', 0)
+        AD_features = F.pad(AD_features, (0, 0, 1, 2), 'constant', 0)
 
         # Build relative orientations
         o_1 = F.normalize(u_2 - u_1, dim=-1)
         O = torch.stack((o_1, n_2, torch.cross(o_1, n_2)), 2)
         O = O.view(list(O.shape[:2]) + [9])
-        O = F.pad(O, (0,0,1,2), 'constant', 0)
+        O = F.pad(O, (0, 0, 1, 2), 'constant', 0)
         O_neighbors = gather_nodes(O, E_idx)
         X_neighbors = gather_nodes(X, E_idx)
         
         # Re-view as rotation matrices
-        O = O.view(list(O.shape[:2]) + [3,3])
-        O_neighbors = O_neighbors.view(list(O_neighbors.shape[:3]) + [3,3])
+        O = O.view(list(O.shape[:2]) + [3, 3])
+        O_neighbors = O_neighbors.view(list(O_neighbors.shape[:3]) + [3, 3])
 
         # Rotate into local reference frames
         dX = X_neighbors - X.unsqueeze(-2)
         dU = torch.matmul(O.unsqueeze(2), dX.unsqueeze(-1)).squeeze(-1)
         dU = F.normalize(dU, dim=-1)
-        R = torch.matmul(O.unsqueeze(2).transpose(-1,-2), O_neighbors)
+        R = torch.matmul(O.unsqueeze(2).transpose(-1, -2), O_neighbors)
         Q = self._quaternions(R)
 
         # Orientation features
-        O_features = torch.cat((dU,Q), dim=-1)
+        O_features = torch.cat((dU, Q), dim=-1)
         return AD_features, O_features
 
 
@@ -950,8 +927,8 @@ class CA_ProteinFeatures(nn.Module):
     def _dist(self, X, mask, eps=1E-6):
         """ Pairwise euclidean distances """
         # Convolutional network on NCHW
-        mask_2D = torch.unsqueeze(mask,1) * torch.unsqueeze(mask,2)
-        dX = torch.unsqueeze(X,1) - torch.unsqueeze(X,2)
+        mask_2D = torch.unsqueeze(mask, 1) * torch.unsqueeze(mask, 2)
+        dX = torch.unsqueeze(X, 1) - torch.unsqueeze(X, 2)
         D = mask_2D * torch.sqrt(torch.sum(dX**2, 3) + eps)
 
         # Identify k nearest neighbors (including self)
@@ -966,15 +943,15 @@ class CA_ProteinFeatures(nn.Module):
         device = D.device
         D_min, D_max, D_count = 2., 22., self.num_rbf
         D_mu = torch.linspace(D_min, D_max, D_count).to(device)
-        D_mu = D_mu.view([1,1,1,-1])
+        D_mu = D_mu.view([1, 1, 1, -1])
         D_sigma = (D_max - D_min) / D_count
         D_expand = torch.unsqueeze(D, -1)
         RBF = torch.exp(-((D_expand - D_mu) / D_sigma)**2)
         return RBF
 
     def _get_rbf(self, A, B, E_idx):
-        D_A_B = torch.sqrt(torch.sum((A[:,:,None,:] - B[:,None,:,:])**2,-1) + 1e-6) #[B, L, L]
-        D_A_B_neighbors = gather_edges(D_A_B[:,:,:,None], E_idx)[:,:,:,0] #[B,L,K]
+        D_A_B = torch.sqrt(torch.sum((A[:, :, None, :] - B[:, None, :, :])**2, -1) + 1e-6) #[B, L, L]
+        D_A_B_neighbors = gather_edges(D_A_B[:, :, :, None], E_idx)[:, :, :, 0] #[B,L,K]
         RBF_A_B = self._rbf(D_A_B_neighbors)
         return RBF_A_B
 
@@ -987,9 +964,9 @@ class CA_ProteinFeatures(nn.Module):
 
         Ca_0 = torch.zeros(Ca.shape, device=Ca.device)
         Ca_2 = torch.zeros(Ca.shape, device=Ca.device)
-        Ca_0[:,1:,:] = Ca[:,:-1,:]
+        Ca_0[:, 1:, :] = Ca[:, :-1, :]
         Ca_1 = Ca
-        Ca_2[:,:-1,:] = Ca[:,1:,:]
+        Ca_2[:, :-1, :] = Ca[:, 1:, :]
 
         V, O_features = self._orientations_coarse(Ca, E_idx)
         
@@ -1011,11 +988,11 @@ class CA_ProteinFeatures(nn.Module):
         RBF_all = torch.cat(tuple(RBF_all), dim=-1)
 
 
-        offset = residue_idx[:,:,None]-residue_idx[:,None,:]
-        offset = gather_edges(offset[:,:,:,None], E_idx)[:,:,:,0] #[B, L, K]
+        offset = residue_idx[:, :, None]-residue_idx[:, None, :]
+        offset = gather_edges(offset[:, :, :, None], E_idx)[:, :, :, 0] #[B, L, K]
 
-        d_chains = ((chain_labels[:, :, None] - chain_labels[:,None,:])==0).long()
-        E_chains = gather_edges(d_chains[:,:,:,None], E_idx)[:,:,:,0]
+        d_chains = ((chain_labels[:, :, None] - chain_labels[:, None, :])==0).long()
+        E_chains = gather_edges(d_chains[:, :, :, None], E_idx)[:, :, :, 0]
         E_positional = self.embeddings(offset.long(), E_chains)
         E = torch.cat((E_positional, RBF_all, O_features), -1)
         
@@ -1046,8 +1023,8 @@ class ProteinFeatures(nn.Module):
         self.norm_edges = nn.LayerNorm(edge_features)
 
     def _dist(self, X, mask, eps=1E-6):
-        mask_2D = torch.unsqueeze(mask,1) * torch.unsqueeze(mask,2)
-        dX = torch.unsqueeze(X,1) - torch.unsqueeze(X,2)
+        mask_2D = torch.unsqueeze(mask, 1) * torch.unsqueeze(mask, 2)
+        dX = torch.unsqueeze(X, 1) - torch.unsqueeze(X, 2)
         D = mask_2D * torch.sqrt(torch.sum(dX**2, 3) + eps)
         D_max, _ = torch.max(D, -1, keepdim=True)
         D_adjust = D + (1. - mask_2D) * D_max
@@ -1059,15 +1036,15 @@ class ProteinFeatures(nn.Module):
         device = D.device
         D_min, D_max, D_count = 2., 22., self.num_rbf
         D_mu = torch.linspace(D_min, D_max, D_count, device=device)
-        D_mu = D_mu.view([1,1,1,-1])
+        D_mu = D_mu.view([1, 1, 1, -1])
         D_sigma = (D_max - D_min) / D_count
         D_expand = torch.unsqueeze(D, -1)
         RBF = torch.exp(-((D_expand - D_mu) / D_sigma)**2)
         return RBF
 
     def _get_rbf(self, A, B, E_idx):
-        D_A_B = torch.sqrt(torch.sum((A[:,:,None,:] - B[:,None,:,:])**2,-1) + 1e-6) #[B, L, L]
-        D_A_B_neighbors = gather_edges(D_A_B[:,:,:,None], E_idx)[:,:,:,0] #[B,L,K]
+        D_A_B = torch.sqrt(torch.sum((A[:, :, None, :] - B[:, None, :, :])**2, -1) + 1e-6) #[B, L, L]
+        D_A_B_neighbors = gather_edges(D_A_B[:, :, :, None], E_idx)[:, :, :, 0] #[B,L,K]
         RBF_A_B = self._rbf(D_A_B_neighbors)
         return RBF_A_B
 
@@ -1075,14 +1052,14 @@ class ProteinFeatures(nn.Module):
         if self.augment_eps > 0:
             X = X + self.augment_eps * torch.randn_like(X)
         
-        b = X[:,:,1,:] - X[:,:,0,:]
-        c = X[:,:,2,:] - X[:,:,1,:]
+        b = X[:, :, 1, :] - X[:, :, 0, :]
+        c = X[:, :, 2, :] - X[:, :, 1, :]
         a = torch.cross(b, c, dim=-1)
-        Cb = -0.58273431*a + 0.56802827*b - 0.54067466*c + X[:,:,1,:]
-        Ca = X[:,:,1,:]
-        N = X[:,:,0,:]
-        C = X[:,:,2,:]
-        O = X[:,:,3,:]
+        Cb = -0.58273431*a + 0.56802827*b - 0.54067466*c + X[:, :, 1, :]
+        Ca = X[:, :, 1, :]
+        N = X[:, :, 0, :]
+        C = X[:, :, 2, :]
+        O = X[:, :, 3, :]
  
         D_neighbors, E_idx = self._dist(Ca, mask)
 
@@ -1114,11 +1091,11 @@ class ProteinFeatures(nn.Module):
         RBF_all.append(self._get_rbf(C, O, E_idx)) #C-O
         RBF_all = torch.cat(tuple(RBF_all), dim=-1)
 
-        offset = residue_idx[:,:,None]-residue_idx[:,None,:]
-        offset = gather_edges(offset[:,:,:,None], E_idx)[:,:,:,0] #[B, L, K]
+        offset = residue_idx[:, :, None]-residue_idx[:, None, :]
+        offset = gather_edges(offset[:, :, :, None], E_idx)[:, :, :, 0] #[B, L, K]
 
-        d_chains = ((chain_labels[:, :, None] - chain_labels[:,None,:])==0).long() #find self vs non-self interaction
-        E_chains = gather_edges(d_chains[:,:,:,None], E_idx)[:,:,:,0]
+        d_chains = ((chain_labels[:, :, None] - chain_labels[:, None, :])==0).long() #find self vs non-self interaction
+        E_chains = gather_edges(d_chains[:, :, :, None], E_idx)[:, :, :, 0]
         E_positional = self.embeddings(offset.long(), E_chains)
         E = torch.cat((E_positional, RBF_all), -1)
         E = self.edge_embedding(E)
@@ -1193,7 +1170,7 @@ class ProteinMPNN(nn.Module):
             decoding_order = torch.argsort((chain_M+0.0001)*(torch.abs(randn))) #[numbers will be smaller for places where chain_M = 0.0 and higher for places where chain_M = 1.0]
         mask_size = E_idx.shape[1]
         permutation_matrix_reverse = torch.nn.functional.one_hot(decoding_order, num_classes=mask_size).float()
-        order_mask_backward = torch.einsum('ij, biq, bjp->bqp',(1-torch.triu(torch.ones(mask_size,mask_size, device=device))), permutation_matrix_reverse, permutation_matrix_reverse)
+        order_mask_backward = torch.einsum('ij, biq, bjp->bqp', (1-torch.triu(torch.ones(mask_size, mask_size, device=device))), permutation_matrix_reverse, permutation_matrix_reverse)
         mask_attend = torch.gather(order_mask_backward, 2, E_idx).unsqueeze(-1)
         mask_1D = mask.view([mask.size(0), mask.size(1), 1, 1])
         mask_bw = mask_1D * mask_attend
@@ -1230,7 +1207,7 @@ class ProteinMPNN(nn.Module):
         decoding_order = torch.argsort((chain_mask+0.0001)*(torch.abs(randn))) #[numbers will be smaller for places where chain_M = 0.0 and higher for places where chain_M = 1.0]
         mask_size = E_idx.shape[1]
         permutation_matrix_reverse = torch.nn.functional.one_hot(decoding_order, num_classes=mask_size).float()
-        order_mask_backward = torch.einsum('ij, biq, bjp->bqp',(1-torch.triu(torch.ones(mask_size,mask_size, device=device))), permutation_matrix_reverse, permutation_matrix_reverse)
+        order_mask_backward = torch.einsum('ij, biq, bjp->bqp', (1-torch.triu(torch.ones(mask_size, mask_size, device=device))), permutation_matrix_reverse, permutation_matrix_reverse)
         mask_attend = torch.gather(order_mask_backward, 2, E_idx).unsqueeze(-1)
         mask_1D = mask.view([mask.size(0), mask.size(1), 1, 1])
         mask_bw = mask_1D * mask_attend
@@ -1252,49 +1229,49 @@ class ProteinMPNN(nn.Module):
         h_EXV_encoder = cat_neighbors_nodes(h_V, h_EX_encoder, E_idx)
         h_EXV_encoder_fw = mask_fw * h_EXV_encoder
         for t_ in range(N_nodes):
-            t = decoding_order[:,t_] #[B]
-            chain_mask_gathered = torch.gather(chain_mask, 1, t[:,None]) #[B]
-            mask_gathered = torch.gather(mask, 1, t[:,None]) #[B]
-            bias_by_res_gathered = torch.gather(bias_by_res, 1, t[:,None,None].repeat(1,1,21))[:,0,:] #[B, 21]
+            t = decoding_order[:, t_] #[B]
+            chain_mask_gathered = torch.gather(chain_mask, 1, t[:, None]) #[B]
+            mask_gathered = torch.gather(mask, 1, t[:, None]) #[B]
+            bias_by_res_gathered = torch.gather(bias_by_res, 1, t[:, None, None].repeat(1, 1, 21))[:, 0, :] #[B, 21]
             if (mask_gathered==0).all(): #for padded or missing regions only
-                S_t = torch.gather(S_true, 1, t[:,None])
+                S_t = torch.gather(S_true, 1, t[:, None])
             else:
                 # Hidden layers
-                E_idx_t = torch.gather(E_idx, 1, t[:,None,None].repeat(1,1,E_idx.shape[-1]))
-                h_E_t = torch.gather(h_E, 1, t[:,None,None,None].repeat(1,1,h_E.shape[-2], h_E.shape[-1]))
+                E_idx_t = torch.gather(E_idx, 1, t[:, None, None].repeat(1, 1, E_idx.shape[-1]))
+                h_E_t = torch.gather(h_E, 1, t[:, None, None, None].repeat(1, 1, h_E.shape[-2], h_E.shape[-1]))
                 h_ES_t = cat_neighbors_nodes(h_S, h_E_t, E_idx_t)
-                h_EXV_encoder_t = torch.gather(h_EXV_encoder_fw, 1, t[:,None,None,None].repeat(1,1,h_EXV_encoder_fw.shape[-2], h_EXV_encoder_fw.shape[-1]))
-                mask_t = torch.gather(mask, 1, t[:,None])
+                h_EXV_encoder_t = torch.gather(h_EXV_encoder_fw, 1, t[:, None, None, None].repeat(1, 1, h_EXV_encoder_fw.shape[-2], h_EXV_encoder_fw.shape[-1]))
+                mask_t = torch.gather(mask, 1, t[:, None])
                 for l, layer in enumerate(self.decoder_layers):
                     # Updated relational features for future states
                     h_ESV_decoder_t = cat_neighbors_nodes(h_V_stack[l], h_ES_t, E_idx_t)
-                    h_V_t = torch.gather(h_V_stack[l], 1, t[:,None,None].repeat(1,1,h_V_stack[l].shape[-1]))
-                    h_ESV_t = torch.gather(mask_bw, 1, t[:,None,None,None].repeat(1,1,mask_bw.shape[-2], mask_bw.shape[-1])) * h_ESV_decoder_t + h_EXV_encoder_t
-                    h_V_stack[l+1].scatter_(1, t[:,None,None].repeat(1,1,h_V.shape[-1]), layer(h_V_t, h_ESV_t, mask_V=mask_t))
+                    h_V_t = torch.gather(h_V_stack[l], 1, t[:, None, None].repeat(1, 1, h_V_stack[l].shape[-1]))
+                    h_ESV_t = torch.gather(mask_bw, 1, t[:, None, None, None].repeat(1, 1, mask_bw.shape[-2], mask_bw.shape[-1])) * h_ESV_decoder_t + h_EXV_encoder_t
+                    h_V_stack[l+1].scatter_(1, t[:, None, None].repeat(1, 1, h_V.shape[-1]), layer(h_V_t, h_ESV_t, mask_V=mask_t))
                 # Sampling step
-                h_V_t = torch.gather(h_V_stack[-1], 1, t[:,None,None].repeat(1,1,h_V_stack[-1].shape[-1]))[:,0]
+                h_V_t = torch.gather(h_V_stack[-1], 1, t[:, None, None].repeat(1, 1, h_V_stack[-1].shape[-1]))[:, 0]
                 logits = self.W_out(h_V_t) / temperature
-                probs = F.softmax(logits-constant[None,:]*1e8+constant_bias[None,:]/temperature+bias_by_res_gathered/temperature, dim=-1)
+                probs = F.softmax(logits-constant[None, :]*1e8+constant_bias[None, :]/temperature+bias_by_res_gathered/temperature, dim=-1)
                 if pssm_bias_flag:
-                    pssm_coef_gathered = torch.gather(pssm_coef, 1, t[:,None])[:,0]
-                    pssm_bias_gathered = torch.gather(pssm_bias, 1, t[:,None,None].repeat(1,1,pssm_bias.shape[-1]))[:,0]
-                    probs = (1-pssm_multi*pssm_coef_gathered[:,None])*probs + pssm_multi*pssm_coef_gathered[:,None]*pssm_bias_gathered
+                    pssm_coef_gathered = torch.gather(pssm_coef, 1, t[:, None])[:, 0]
+                    pssm_bias_gathered = torch.gather(pssm_bias, 1, t[:, None, None].repeat(1, 1, pssm_bias.shape[-1]))[:, 0]
+                    probs = (1-pssm_multi*pssm_coef_gathered[:, None])*probs + pssm_multi*pssm_coef_gathered[:, None]*pssm_bias_gathered
                 if pssm_log_odds_flag:
-                    pssm_log_odds_mask_gathered = torch.gather(pssm_log_odds_mask, 1, t[:,None, None].repeat(1,1,pssm_log_odds_mask.shape[-1]))[:,0] #[B, 21]
+                    pssm_log_odds_mask_gathered = torch.gather(pssm_log_odds_mask, 1, t[:, None, None].repeat(1, 1, pssm_log_odds_mask.shape[-1]))[:, 0] #[B, 21]
                     probs_masked = probs*pssm_log_odds_mask_gathered
                     probs_masked += probs * 0.001
                     probs = probs_masked/torch.sum(probs_masked, dim=-1, keepdim=True) #[B, 21]
                 if omit_AA_mask_flag:
-                    omit_AA_mask_gathered = torch.gather(omit_AA_mask, 1, t[:,None, None].repeat(1,1,omit_AA_mask.shape[-1]))[:,0] #[B, 21]
+                    omit_AA_mask_gathered = torch.gather(omit_AA_mask, 1, t[:, None, None].repeat(1, 1, omit_AA_mask.shape[-1]))[:, 0] #[B, 21]
                     probs_masked = probs*(1.0-omit_AA_mask_gathered)
                     probs = probs_masked/torch.sum(probs_masked, dim=-1, keepdim=True) #[B, 21]
                 S_t = torch.multinomial(probs, 1)
-                all_probs.scatter_(1, t[:,None,None].repeat(1,1,21), (chain_mask_gathered[:,:,None,]*probs[:,None,:]).float())
-            S_true_gathered = torch.gather(S_true, 1, t[:,None])
+                all_probs.scatter_(1, t[:, None, None].repeat(1, 1, 21), (chain_mask_gathered[:, :, None,]*probs[:, None, :]).float())
+            S_true_gathered = torch.gather(S_true, 1, t[:, None])
             S_t = (S_t*chain_mask_gathered+S_true_gathered*(1.0-chain_mask_gathered)).long()
             temp1 = self.W_s(S_t)
-            h_S.scatter_(1, t[:,None,None].repeat(1,1,temp1.shape[-1]), temp1)
-            S.scatter_(1, t[:,None], S_t)
+            h_S.scatter_(1, t[:, None, None].repeat(1, 1, temp1.shape[-1]), temp1)
+            S.scatter_(1, t[:, None], S_t)
         output_dict = {"S": S, "probs": all_probs, "decoding_order": decoding_order}
         return output_dict
 
@@ -1323,11 +1300,11 @@ class ProteinMPNN(nn.Module):
                     new_decoding_order.append(list_a[0])
                 else:
                     new_decoding_order.append([t_dec])
-        decoding_order = torch.tensor(list(itertools.chain(*new_decoding_order)), device=device)[None,].repeat(X.shape[0],1)
+        decoding_order = torch.tensor(list(itertools.chain(*new_decoding_order)), device=device)[None,].repeat(X.shape[0], 1)
 
         mask_size = E_idx.shape[1]
         permutation_matrix_reverse = torch.nn.functional.one_hot(decoding_order, num_classes=mask_size).float()
-        order_mask_backward = torch.einsum('ij, biq, bjp->bqp',(1-torch.triu(torch.ones(mask_size,mask_size, device=device))), permutation_matrix_reverse, permutation_matrix_reverse)
+        order_mask_backward = torch.einsum('ij, biq, bjp->bqp', (1-torch.triu(torch.ones(mask_size, mask_size, device=device))), permutation_matrix_reverse, permutation_matrix_reverse)
         mask_attend = torch.gather(order_mask_backward, 2, E_idx).unsqueeze(-1)
         mask_1D = mask.view([mask.size(0), mask.size(1), 1, 1])
         mask_bw = mask_1D * mask_attend
@@ -1351,51 +1328,51 @@ class ProteinMPNN(nn.Module):
             logit_list = []
             done_flag = False
             for t in t_list:
-                if (mask[:,t]==0).all():
-                    S_t = S_true[:,t]
+                if (mask[:, t]==0).all():
+                    S_t = S_true[:, t]
                     for t in t_list:
-                        h_S[:,t,:] = self.W_s(S_t)
-                        S[:,t] = S_t
+                        h_S[:, t, :] = self.W_s(S_t)
+                        S[:, t] = S_t
                     done_flag = True
                     break
                 else:
-                    E_idx_t = E_idx[:,t:t+1,:]
-                    h_E_t = h_E[:,t:t+1,:,:]
+                    E_idx_t = E_idx[:, t:t+1, :]
+                    h_E_t = h_E[:, t:t+1, :, :]
                     h_ES_t = cat_neighbors_nodes(h_S, h_E_t, E_idx_t)
-                    h_EXV_encoder_t = h_EXV_encoder_fw[:,t:t+1,:,:]
-                    mask_t = mask[:,t:t+1]
+                    h_EXV_encoder_t = h_EXV_encoder_fw[:, t:t+1, :, :]
+                    mask_t = mask[:, t:t+1]
                     for l, layer in enumerate(self.decoder_layers):
                         h_ESV_decoder_t = cat_neighbors_nodes(h_V_stack[l], h_ES_t, E_idx_t)
-                        h_V_t = h_V_stack[l][:,t:t+1,:]
-                        h_ESV_t = mask_bw[:,t:t+1,:,:] * h_ESV_decoder_t + h_EXV_encoder_t
-                        h_V_stack[l+1][:,t,:] = layer(h_V_t, h_ESV_t, mask_V=mask_t).squeeze(1)
-                    h_V_t = h_V_stack[-1][:,t,:]
+                        h_V_t = h_V_stack[l][:, t:t+1, :]
+                        h_ESV_t = mask_bw[:, t:t+1, :, :] * h_ESV_decoder_t + h_EXV_encoder_t
+                        h_V_stack[l+1][:, t, :] = layer(h_V_t, h_ESV_t, mask_V=mask_t).squeeze(1)
+                    h_V_t = h_V_stack[-1][:, t, :]
                     logit_list.append((self.W_out(h_V_t) / temperature)/len(t_list))
                     logits += tied_beta[t]*(self.W_out(h_V_t) / temperature)/len(t_list)
             if done_flag:
                 pass
             else:
-                bias_by_res_gathered = bias_by_res[:,t,:] #[B, 21]
-                probs = F.softmax(logits-constant[None,:]*1e8+constant_bias[None,:]/temperature+bias_by_res_gathered/temperature, dim=-1)
+                bias_by_res_gathered = bias_by_res[:, t, :] #[B, 21]
+                probs = F.softmax(logits-constant[None, :]*1e8+constant_bias[None, :]/temperature+bias_by_res_gathered/temperature, dim=-1)
                 if pssm_bias_flag:
-                    pssm_coef_gathered = pssm_coef[:,t]
-                    pssm_bias_gathered = pssm_bias[:,t]
-                    probs = (1-pssm_multi*pssm_coef_gathered[:,None])*probs + pssm_multi*pssm_coef_gathered[:,None]*pssm_bias_gathered
+                    pssm_coef_gathered = pssm_coef[:, t]
+                    pssm_bias_gathered = pssm_bias[:, t]
+                    probs = (1-pssm_multi*pssm_coef_gathered[:, None])*probs + pssm_multi*pssm_coef_gathered[:, None]*pssm_bias_gathered
                 if pssm_log_odds_flag:
-                    pssm_log_odds_mask_gathered = pssm_log_odds_mask[:,t]
+                    pssm_log_odds_mask_gathered = pssm_log_odds_mask[:, t]
                     probs_masked = probs*pssm_log_odds_mask_gathered
                     probs_masked += probs * 0.001
                     probs = probs_masked/torch.sum(probs_masked, dim=-1, keepdim=True) #[B, 21]
                 if omit_AA_mask_flag:
-                    omit_AA_mask_gathered = omit_AA_mask[:,t]
+                    omit_AA_mask_gathered = omit_AA_mask[:, t]
                     probs_masked = probs*(1.0-omit_AA_mask_gathered)
                     probs = probs_masked/torch.sum(probs_masked, dim=-1, keepdim=True) #[B, 21]
                 S_t_repeat = torch.multinomial(probs, 1).squeeze(-1)
-                S_t_repeat = (chain_mask[:,t]*S_t_repeat + (1-chain_mask[:,t])*S_true[:,t]).long() #hard pick fixed positions
+                S_t_repeat = (chain_mask[:, t]*S_t_repeat + (1-chain_mask[:, t])*S_true[:, t]).long() #hard pick fixed positions
                 for t in t_list:
-                    h_S[:,t,:] = self.W_s(S_t_repeat)
-                    S[:,t] = S_t_repeat
-                    all_probs[:,t,:] = probs.float()
+                    h_S[:, t, :] = self.W_s(S_t_repeat)
+                    S[:, t] = S_t_repeat
+                    all_probs[:, t, :] = probs.float()
         output_dict = {"S": S, "probs": all_probs, "decoding_order": decoding_order}
         return output_dict
 
@@ -1426,7 +1403,7 @@ class ProteinMPNN(nn.Module):
         chain_M = chain_M*mask #update chain_M to include missing regions
   
         chain_M_np = chain_M.cpu().numpy()
-        idx_to_loop = np.argwhere(chain_M_np[0,:]==1)[:,0]
+        idx_to_loop = np.argwhere(chain_M_np[0, :]==1)[:, 0]
         log_conditional_probs = torch.zeros([X.shape[0], chain_M.shape[1], 21], device=device).float()
 
         for idx in idx_to_loop:
@@ -1441,7 +1418,7 @@ class ProteinMPNN(nn.Module):
             decoding_order = torch.argsort((order_mask[None,]+0.0001)*(torch.abs(randn))) #[numbers will be smaller for places where chain_M = 0.0 and higher for places where chain_M = 1.0]
             mask_size = E_idx.shape[1]
             permutation_matrix_reverse = torch.nn.functional.one_hot(decoding_order, num_classes=mask_size).float()
-            order_mask_backward = torch.einsum('ij, biq, bjp->bqp',(1-torch.triu(torch.ones(mask_size,mask_size, device=device))), permutation_matrix_reverse, permutation_matrix_reverse)
+            order_mask_backward = torch.einsum('ij, biq, bjp->bqp', (1-torch.triu(torch.ones(mask_size, mask_size, device=device))), permutation_matrix_reverse, permutation_matrix_reverse)
             mask_attend = torch.gather(order_mask_backward, 2, E_idx).unsqueeze(-1)
             mask_1D = mask.view([mask.size(0), mask.size(1), 1, 1])
             mask_bw = mask_1D * mask_attend
@@ -1456,7 +1433,7 @@ class ProteinMPNN(nn.Module):
 
             logits = self.W_out(h_V)
             log_probs = F.log_softmax(logits, dim=-1)
-            log_conditional_probs[:,idx,:] = log_probs[:,idx,:]
+            log_conditional_probs[:, idx, :] = log_probs[:, idx, :]
         return log_conditional_probs
 
 

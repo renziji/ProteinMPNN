@@ -52,7 +52,7 @@ class StructureDataset():
 
 class StructureLoader():
     def __init__(self, dataset, batch_size=100, shuffle=True,
-        collate_fn=lambda x:x, drop_last=False):
+        collate_fn=lambda x: x, drop_last=False):
         self.dataset = dataset
         self.size = len(dataset)
         self.lengths = [len(dataset[i]['seq']) for i in range(self.size)]
@@ -131,7 +131,7 @@ def get_std_opt(parameters, d_model, step):
 
 
 def get_pdbs(data_loader, repeat=1, max_length=10000, num_units=1000000):
-    init_alphabet = ['A', 'B', 'C', 'D', 'E', 'F', 'G','H', 'I', 'J','K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T','U', 'V','W','X', 'Y', 'Z', 'a', 'b', 'c', 'd', 'e', 'f', 'g','h', 'i', 'j','k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't','u', 'v','w','x', 'y', 'z']
+    init_alphabet = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z']
     extra_alphabet = [str(item) for item in list(np.arange(300))]
     chain_alphabet = init_alphabet + extra_alphabet
     c = 0
@@ -139,8 +139,8 @@ def get_pdbs(data_loader, repeat=1, max_length=10000, num_units=1000000):
     pdb_dict_list = []
     t0 = time.time()
     for _ in range(repeat):
-        for step,t in enumerate(data_loader):
-            t = {k:v[0] for k,v in t.items()}
+        for step, t in enumerate(data_loader):
+            t = {k: v[0] for k, v in t.items()}
             c1 += 1
             if 'label' in list(t):
                 my_dict = {}
@@ -160,25 +160,25 @@ def get_pdbs(data_loader, repeat=1, max_length=10000, num_units=1000000):
                         res = np.argwhere(t['idx']==idx)
                         initial_sequence= "".join(list(np.array(list(t['seq']))[res][0,]))
                         if initial_sequence[-6:] == "HHHHHH":
-                            res = res[:,:-6]
+                            res = res[:, :-6]
                         if initial_sequence[0:6] == "HHHHHH":
-                            res = res[:,6:]
+                            res = res[:, 6:]
                         if initial_sequence[-7:-1] == "HHHHHH":
-                           res = res[:,:-7]
+                           res = res[:, :-7]
                         if initial_sequence[-8:-2] == "HHHHHH":
-                           res = res[:,:-8]
+                           res = res[:, :-8]
                         if initial_sequence[-9:-3] == "HHHHHH":
-                           res = res[:,:-9]
+                           res = res[:, :-9]
                         if initial_sequence[-10:-4] == "HHHHHH":
-                           res = res[:,:-10]
+                           res = res[:, :-10]
                         if initial_sequence[1:7] == "HHHHHH":
-                            res = res[:,7:]
+                            res = res[:, 7:]
                         if initial_sequence[2:8] == "HHHHHH":
-                            res = res[:,8:]
+                            res = res[:, 8:]
                         if initial_sequence[3:9] == "HHHHHH":
-                            res = res[:,9:]
+                            res = res[:, 9:]
                         if initial_sequence[4:10] == "HHHHHH":
-                            res = res[:,10:]
+                            res = res[:, 10:]
                         if res.shape[1] < 4:
                             pass
                         else:
@@ -190,10 +190,10 @@ def get_pdbs(data_loader, repeat=1, max_length=10000, num_units=1000000):
                                 visible_list.append(letter)
                             coords_dict_chain = {}
                             all_atoms = np.array(t['xyz'][res,])[0,] #[L, 14, 3]
-                            coords_dict_chain['N_chain_'+letter]=all_atoms[:,0,:].tolist()
-                            coords_dict_chain['CA_chain_'+letter]=all_atoms[:,1,:].tolist()
-                            coords_dict_chain['C_chain_'+letter]=all_atoms[:,2,:].tolist()
-                            coords_dict_chain['O_chain_'+letter]=all_atoms[:,3,:].tolist()
+                            coords_dict_chain['N_chain_'+letter]=all_atoms[:, 0, :].tolist()
+                            coords_dict_chain['CA_chain_'+letter]=all_atoms[:, 1, :].tolist()
+                            coords_dict_chain['C_chain_'+letter]=all_atoms[:, 2, :].tolist()
+                            coords_dict_chain['O_chain_'+letter]=all_atoms[:, 3, :].tolist()
                             my_dict['coords_chain_'+letter]=coords_dict_chain
                     my_dict['name']= t['label']
                     my_dict['masked_list']= mask_list
@@ -226,10 +226,10 @@ class PDB_dataset(torch.utils.data.Dataset):
 
 
 
-def loader_pdb(item,params):
+def loader_pdb(item, params):
 
-    pdbid,chid = item[0].split('_')
-    PREFIX = "%s/pdb/%s/%s"%(params['DIR'],pdbid[1:3],pdbid)
+    pdbid, chid = item[0].split('_')
+    PREFIX = "%s/pdb/%s/%s"%(params['DIR'], pdbid[1:3], pdbid)
     
     # load metadata
     if not os.path.isfile(PREFIX+".pt"):
@@ -240,13 +240,13 @@ def loader_pdb(item,params):
     chids = np.array(meta['chains'])
 
     # find candidate assemblies which contain chid chain
-    asmb_candidates = set([a for a,b in zip(asmb_ids,asmb_chains)
+    asmb_candidates = set([a for a, b in zip(asmb_ids, asmb_chains)
                            if chid in b.split(',')])
 
     # if the chains is missing is missing from all the assemblies
     # then return this chain alone
     if len(asmb_candidates)<1:
-        chain = torch.load("%s_%s.pt"%(PREFIX,chid))
+        chain = torch.load("%s_%s.pt"%(PREFIX, chid))
         L = len(chain['seq'])
         return {'seq'    : chain['seq'],
                 'xyz'    : chain['xyz'],
@@ -261,7 +261,7 @@ def loader_pdb(item,params):
     idx = np.where(np.array(asmb_ids)==asmb_i)[0]
 
     # load relevant chains
-    chains = {c:torch.load("%s_%s.pt"%(PREFIX,c))
+    chains = {c: torch.load("%s_%s.pt"%(PREFIX, c))
               for i in idx for c in asmb_chains[i]
               if c in meta['chains']}
 
@@ -271,8 +271,8 @@ def loader_pdb(item,params):
 
         # pick k-th xform
         xform = meta['asmb_xform%d'%k]
-        u = xform[:,:3,:3]
-        r = xform[:,:3,3]
+        u = xform[:, :3, :3]
+        r = xform[:, :3, 3]
 
         # select chains which k-th xform should be applied to
         s1 = set(meta['chains'])
@@ -283,29 +283,29 @@ def loader_pdb(item,params):
         for c in chains_k:
             try:
                 xyz = chains[c]['xyz']
-                xyz_ru = torch.einsum('bij,raj->brai', u, xyz) + r[:,None,None,:]
-                asmb.update({(c,k,i):xyz_i for i,xyz_i in enumerate(xyz_ru)})
+                xyz_ru = torch.einsum('bij,raj->brai', u, xyz) + r[:, None, None, :]
+                asmb.update({(c, k, i): xyz_i for i, xyz_i in enumerate(xyz_ru)})
             except KeyError:
                 return {'seq': np.zeros(5)}
 
     # select chains which share considerable similarity to chid
-    seqid = meta['tm'][chids==chid][0,:,1]
-    homo = set([ch_j for seqid_j,ch_j in zip(seqid,chids)
+    seqid = meta['tm'][chids==chid][0, :, 1]
+    homo = set([ch_j for seqid_j, ch_j in zip(seqid, chids)
                 if seqid_j>params['HOMO']])
     # stack all chains in the assembly together
-    seq,xyz,idx,masked = "",[],[],[]
+    seq, xyz, idx, masked = "", [], [], []
     seq_list = []
-    for counter,(k,v) in enumerate(asmb.items()):
+    for counter, (k, v) in enumerate(asmb.items()):
         seq += chains[k[0]]['seq']
         seq_list.append(chains[k[0]]['seq'])
         xyz.append(v)
-        idx.append(torch.full((v.shape[0],),counter))
+        idx.append(torch.full((v.shape[0],), counter))
         if k[0] in homo:
             masked.append(counter)
 
     return {'seq'    : seq,
-            'xyz'    : torch.cat(xyz,dim=0),
-            'idx'    : torch.cat(idx,dim=0),
+            'xyz'    : torch.cat(xyz, dim=0),
+            'idx'    : torch.cat(idx, dim=0),
             'masked' : torch.Tensor(masked).int(),
             'label'  : item[0]}
 
@@ -324,7 +324,7 @@ def build_training_clusters(params, debug):
     with open(params['LIST'], 'r') as f:
         reader = csv.reader(f)
         next(reader)
-        rows = [[r[0],r[3],int(r[4])] for r in reader
+        rows = [[r[0], r[3], int(r[4])] for r in reader
                 if float(r[2])<=params['RESCUT'] and
                 parser.parse(r[1])<=parser.parse(params['DATCUT'])]
     

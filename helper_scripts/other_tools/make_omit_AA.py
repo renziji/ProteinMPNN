@@ -18,10 +18,10 @@ for json_str in json_list:
         for chain in all_chain_list:
             if chain == 'A':
                 fixed_position_dict[chain] = [
-                    [[int(item) for item in list(itertools.chain(list(np.arange(1,4)), list(np.arange(7,10)), [22, 25, 33]))], 'GPL'],
+                    [[int(item) for item in list(itertools.chain(list(np.arange(1, 4)), list(np.arange(7, 10)), [22, 25, 33]))], 'GPL'],
                     [[int(item) for item in list(itertools.chain([40, 41, 42, 43]))], 'WC'],
-                    [[int(item) for item in list(itertools.chain(list(np.arange(50,150))))], 'ACEFGHIKLMNRSTVWYX'],
-                    [[int(item) for item in list(itertools.chain(list(np.arange(160,200))))], 'FGHIKLPQDMNRSTVWYX']]
+                    [[int(item) for item in list(itertools.chain(list(np.arange(50, 150))))], 'ACEFGHIKLMNRSTVWYX'],
+                    [[int(item) for item in list(itertools.chain(list(np.arange(160, 200))))], 'FGHIKLPQDMNRSTVWYX']]
             else:
                 fixed_position_dict[chain] = []
     else:
