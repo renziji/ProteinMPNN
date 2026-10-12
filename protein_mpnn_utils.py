@@ -53,89 +53,162 @@ def _S_to_seq(S, mask):
     return seq
 
 def parse_PDB_biounits(x, atoms=['N','CA','C'], chain=None):
-  '''
-  input:  x = PDB filename
-          atoms = atoms to extract (optional)
-  output: (length, atoms, coords=(x,y,z)), sequence
-  '''
+    '''
+    Parse one chain from a PDB file and extract atom coordinates plus the sequence.
 
-  alpha_1 = list("ARNDCQEGHILKMFPSTWYV-")
-  states = len(alpha_1)
-  alpha_3 = ['ALA','ARG','ASN','ASP','CYS','GLN','GLU','GLY','HIS','ILE',
-             'LEU','LYS','MET','PHE','PRO','SER','THR','TRP','TYR','VAL','GAP']
-  
-  aa_1_N = {a:n for n,a in enumerate(alpha_1)}
-  aa_3_N = {a:n for n,a in enumerate(alpha_3)}
-  aa_N_1 = {n:a for n,a in enumerate(alpha_1)}
-  aa_1_3 = {a:b for a,b in zip(alpha_1,alpha_3)}
-  aa_3_1 = {b:a for a,b in zip(alpha_1,alpha_3)}
-  
-  def AA_to_N(x):
-    # ["ARND"] -> [[0,1,2,3]]
-    x = np.array(x);
-    if x.ndim == 0: x = x[None]
-    return [[aa_1_N.get(a, states-1) for a in y] for y in x]
-  
-  def N_to_AA(x):
-    # [[0,1,2,3]] -> ["ARND"]
-    x = np.array(x);
-    if x.ndim == 1: x = x[None]
-    return ["".join([aa_N_1.get(a,"-") for a in y]) for y in x]
+    Args:
+            x:     path to the PDB file (text format).
+            atoms: list of atom names to extract, in output order.
+                          Default ['N','CA','C'] (protein backbone); other common choice: ['N','CA','C','O'].
+            chain: single chain ID to extract (e.g. 'A'). If None, atoms from ALL chains are returned.
 
-  xyz,seq,min_resn,max_resn = {},{},1e6,-1e6
-  for line in open(x,"rb"):
-    line = line.decode("utf-8","ignore").rstrip()
+    Returns:
+            xyz: numpy array of shape (n_residues, len(atoms), 3), 0-based residue indexing.
+                      Residues/atoms missing from the file are filled with NaN.
+            seq: list of strings; usually [one_string] where the string is the amino-acid
+                      sequence in one-letter codes, with '-' for missing/unknown residues.
 
-    if line[:6] == "HETATM" and line[17:17+3] == "MSE":
-      line = line.replace("HETATM","ATOM  ")
-      line = line.replace("MSE","MET")
+            If no ATOM record matches the requested chain, returns the pair ('no_chain', 'no_chain').
 
-    if line[:4] == "ATOM":
-      ch = line[21:22]
-      if ch == chain or chain is None:
-        atom = line[12:12+4].strip()
-        resi = line[17:17+3]
-        resn = line[22:22+5].strip()
-        x,y,z = [float(line[i:(i+8)]) for i in [30,38,46]]
+    Notes:
+            - Residue numbers are converted from 1-based PDB numbering to 0-based.
+            - Insertion codes (e.g. residue "100A") are kept as separate sub-entries, sorted after the base residue.
+            - Selenomethionine (MSE, a HETATM record) is converted to standard MET and included.
+    '''
 
-        if resn[-1].isalpha(): 
-            resa,resn = resn[-1],int(resn[:-1])-1
-        else: 
-            resa,resn = "",int(resn)-1
+    # single source of truth: 1-letter code -> 3-letter residue name.
+    # Insertion order defines the numeric encoding (index 0..20);
+    # '-'/GAP marks gaps and unknown residues.
+    # NOTE: this order is baked into the model weights — do not reorder.
+    amino_acid_one_to_three = {
+            'A':'ALA', 'R':'ARG', 'N':'ASN', 'D':'ASP', 'C':'CYS',
+            'Q':'GLN', 'E':'GLU', 'G':'GLY', 'H':'HIS', 'I':'ILE',
+            'L':'LEU', 'K':'LYS', 'M':'MET', 'F':'PHE', 'P':'PRO',
+            'S':'SER', 'T':'THR', 'W':'TRP', 'Y':'TYR', 'V':'VAL', '-':'GAP',
+    }
+
+    # derived views (dicts preserve insertion order, so indices stay consistent)
+    one_letter_alphabet = list(amino_acid_one_to_three.keys())
+    three_letter_alphabet = list(amino_acid_one_to_three.values())
+    # number of states = 21 (20 amino acids + 1 gap symbol)
+    states = len(amino_acid_one_to_three)
+
+    # 1-letter code -> numeric index (e.g. 'A'->0, '-'->20)
+    one_letter_to_index = {code:index for index,code in enumerate(one_letter_alphabet)}
+    # 3-letter code -> numeric index (e.g. 'ALA'->0, 'GAP'->20)
+    three_letter_to_index = {code:index for index,code in enumerate(three_letter_alphabet)}
+    # numeric index -> 1-letter code (inverse of one_letter_to_index)
+    index_to_one_letter = {index:code for index,code in enumerate(one_letter_alphabet)}
+    # 3-letter -> 1-letter mapping (inverse of amino_acid_one_to_three)
+    three_to_one_letter = {three:one for one,three in amino_acid_one_to_three.items()}
+    
+    def sequence_to_indices(x):
+        # ["ARND"] -> [[0,1,2,3]]
+        # normalize the input into a numpy array
+        x = np.array(x);
+        # wrap 0-d input into 1-d so the loop below is uniform
+        if x.ndim == 0: x = x[None]
+        # map each 1-letter code to its numeric index; unknown characters fall back to the gap state
+        return [[one_letter_to_index.get(a, states-1) for a in y] for y in x]
+    
+    def indices_to_sequence(x):
+        # [[0,1,2,3]] -> ["ARND"]
+        # normalize the input into a numpy array
+        x = np.array(x);
+        # wrap 1-d input into 2-d so the loop below iterates over rows uniformly
+        if x.ndim == 1: x = x[None]
+        # map each numeric index back to a 1-letter code and join each row into a sequence string
+        return ["".join([index_to_one_letter.get(a,"-") for a in y]) for y in x]
+
+    # xyz/seq hold per-residue data; min/max track the residue-number range seen so far
+    xyz,seq,min_resn,max_resn = {},{},1e6,-1e6
+    # read the PDB file line by line in binary mode
+    for line in open(x,"rb"):
+        # decode bytes to text (ignoring undecodable characters) and strip the trailing newline
+        line = line.decode("utf-8","ignore").rstrip()
+
+        # selenomethionine (MSE) is a MET-like residue recorded as HETATM; rewrite it as standard ATOM/MET
+        if line[:6] == "HETATM" and line[17:17+3] == "MSE":
+            # change the record type so the ATOM branch below accepts this line
+            line = line.replace("HETATM","ATOM  ")
+            # rename the residue to standard methionine
+            line = line.replace("MSE","MET")
+
+        # only coordinate records of type ATOM are parsed
+        if line[:4] == "ATOM":
+            # chain ID occupies column 22 (0-based index 21)
+            ch = line[21:22]
+            # process the line only if it belongs to the requested chain (or no chain filter is set)
+            if ch == chain or chain is None:
+                # atom name occupies columns 13-16, stripped of padding spaces
+                atom = line[12:12+4].strip()
+                # residue name (3 letters) occupies columns 18-20
+                resi = line[17:17+3]
+                # residue sequence number + optional insertion code occupy columns 23-27
+                resn = line[22:22+5].strip()
+                # x, y, z are fixed-width 8-character fields starting at columns 31, 39, 47
+                x,y,z = [float(line[i:(i+8)]) for i in [30,38,46]]
+
+                # insertion codes (e.g. residue "100A") appear as a trailing letter on the residue field
+                if resn[-1].isalpha():
+                        # split into insertion code + 0-based residue number
+                        resa,resn = resn[-1],int(resn[:-1])-1
+                else:
+                        # no insertion code; convert the 1-based PDB numbering to 0-based
+                        resa,resn = "",int(resn)-1
 #         resn = int(resn)
-        if resn < min_resn: 
-            min_resn = resn
-        if resn > max_resn: 
-            max_resn = resn
-        if resn not in xyz: 
-            xyz[resn] = {}
-        if resa not in xyz[resn]: 
-            xyz[resn][resa] = {}
-        if resn not in seq: 
-            seq[resn] = {}
-        if resa not in seq[resn]: 
-            seq[resn][resa] = resi
+                # update the lowest residue number seen
+                if resn < min_resn:
+                        min_resn = resn
+                # update the highest residue number seen
+                if resn > max_resn:
+                        max_resn = resn
+                # create the per-residue dict on first encounter
+                if resn not in xyz:
+                        xyz[resn] = {}
+                # insertion-code sub-level (handles residues that share the same number)
+                if resa not in xyz[resn]:
+                        xyz[resn][resa] = {}
+                # mirror structure for the sequence dict
+                if resn not in seq:
+                        seq[resn] = {}
+                # record the residue's 3-letter name once per (residue, insertion code) pair
+                if resa not in seq[resn]:
+                        seq[resn][resa] = resi
 
-        if atom not in xyz[resn][resa]:
-          xyz[resn][resa][atom] = np.array([x,y,z])
+                # keep only the first occurrence of each atom (handles duplicate/alternate locations)
+                if atom not in xyz[resn][resa]:
+                    # store the atom's (x, y, z) as a small numpy array
+                    xyz[resn][resa][atom] = np.array([x,y,z])
 
-  # convert to numpy arrays, fill in missing values
-  seq_,xyz_ = [],[]
-  try:
-      for resn in range(min_resn,max_resn+1):
-        if resn in seq:
-          for k in sorted(seq[resn]): seq_.append(aa_3_N.get(seq[resn][k],20))
-        else: seq_.append(20)
-        if resn in xyz:
-          for k in sorted(xyz[resn]):
-            for atom in atoms:
-              if atom in xyz[resn][k]: xyz_.append(xyz[resn][k][atom])
-              else: xyz_.append(np.full(3,np.nan))
-        else:
-          for atom in atoms: xyz_.append(np.full(3,np.nan))
-      return np.array(xyz_).reshape(-1,len(atoms),3), N_to_AA(np.array(seq_))
-  except TypeError:
-      return 'no_chain', 'no_chain'
+    # convert to numpy arrays, fill in missing values
+    # seq_ collects numeric residue states; xyz_ collects flat atom coordinates
+    seq_,xyz_ = [],[]
+    try:
+            # walk every residue number from lowest to highest (gaps get filled below)
+            for resn in range(min_resn,max_resn+1):
+                # residue present: convert each of its insertion-code entries to a numeric state
+                if resn in seq:
+                    for k in sorted(seq[resn]): seq_.append(three_letter_to_index.get(seq[resn][k],20))
+                # residue number missing entirely: use the GAP state (index 20)
+                else: seq_.append(20)
+                # residue has coordinates: emit them in the requested atom order
+                if resn in xyz:
+                    for k in sorted(xyz[resn]):
+                        for atom in atoms:
+                            # atom present: use its stored coordinates
+                            if atom in xyz[resn][k]: xyz_.append(xyz[resn][k][atom])
+                            # atom absent: fill with NaN so the output shape stays consistent
+                            else: xyz_.append(np.full(3,np.nan))
+                # residue missing from the coordinate data: fill all requested atoms with NaN
+                else:
+                    for atom in atoms: xyz_.append(np.full(3,np.nan))
+            # reshape flat coordinates to (n_residues, n_atoms, 3) and decode states to a letter sequence
+            return np.array(xyz_).reshape(-1,len(atoms),3), indices_to_sequence(np.array(seq_))
+    # TypeError occurs when no ATOM records matched (min/max stay at float sentinels, so range() fails)
+    except TypeError:
+            # signal "chain not found" to the caller
+            return 'no_chain', 'no_chain'
 
 def parse_PDB(path_to_pdb, input_chain_list=None, ca_only=False):
     # Parse a single PDB file and return a list of dicts with sequence and backbone coordinates.
@@ -187,6 +260,8 @@ def parse_PDB(path_to_pdb, input_chain_list=None, ca_only=False):
             # only write to the dict when xyz is not a string, i.e. the chain actually exists
             if type(xyz) != str:
                 # append this chain's sequence to the concatenated full sequence
+                # note: seq is a LIST of strings returned by parse_PDB_biounits (via indices_to_sequence),
+                # normally holding exactly one element; seq[0] is the actual sequence string
                 concat_seq += seq[0]
                 # store this chain's sequence under a key like 'seq_chain_A'
                 my_dict['seq_chain_'+letter]=seq[0]
