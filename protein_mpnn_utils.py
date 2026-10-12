@@ -13,6 +13,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 import random
 import itertools
+from typing import Any
+from constants import PROTEIN_ALPHABET, PROTEIN_ALPHABET_WITH_GAP
 
 #A number of functions/classes are adopted from: https://github.com/jingraham/neurips19-graph-protein-design
 
@@ -48,7 +50,7 @@ def _scores(S, log_probs, mask):
     return scores
 
 def _S_to_seq(S, mask):
-    alphabet = 'ACDEFGHIKLMNPQRSTVWYX'
+    alphabet = PROTEIN_ALPHABET
     seq = ''.join([alphabet[c] for c, m in zip(S.tolist(), mask.tolist()) if m > 0])
     return seq
 
@@ -85,7 +87,7 @@ def parse_PDB_biounits(
     # Only key lookups are performed on this mapping, so entry order does not
     # affect correctness; the ARNDC... order is kept for readability and to
     # match the upstream ProteinMPNN convention. The model's actual encoding
-    # alphabet ('ACDEFGHIKLMNPQRSTVWYX') lives in tied_featurize, not here.
+    # alphabet is defined in constants.PROTEIN_ALPHABET, not here.
     amino_acid_one_to_three = {
         'A': 'ALA', 'R': 'ARG', 'N': 'ASN', 'D': 'ASP', 'C': 'CYS',
         'Q': 'GLN', 'E': 'GLU', 'G': 'GLY', 'H': 'HIS', 'I': 'ILE',
@@ -278,7 +280,7 @@ def parse_PDB(path_to_pdb, input_chain_list=None, ca_only=False):
 
 def tied_featurize(batch, device, chain_dict, fixed_position_dict=None, omit_AA_dict=None, tied_positions_dict=None, pssm_dict=None, bias_by_res_dict=None, ca_only=False):
     """ Pack and pad batch into torch tensors """
-    alphabet = 'ACDEFGHIKLMNPQRSTVWYX'
+    alphabet = PROTEIN_ALPHABET
     B = len(batch)
     lengths = np.array([len(b['seq']) for b in batch], dtype=np.int32) #sum of chain seq lengths
     L_max = max([len(b['seq']) for b in batch])
@@ -549,8 +551,8 @@ def loss_smoothed(S, log_probs, mask, weight=0.1):
 
 class StructureDataset():
     def __init__(self, jsonl_file, verbose=True, truncate=None, max_length=100,
-        alphabet='ACDEFGHIKLMNPQRSTVWYX-'):
-        alphabet_set = set([a for a in alphabet])
+        alphabet=PROTEIN_ALPHABET_WITH_GAP):
+        alphabet_set = set(alphabet)
         discard_count = {
             'bad_chars': 0,
             'too_long': 0,
@@ -572,7 +574,7 @@ class StructureDataset():
                 #    entry['coords'][key] = np.asarray(val)
 
                 # Check if in alphabet
-                bad_chars = set([s for s in seq]).difference(alphabet_set)
+                bad_chars = set(seq).difference(alphabet_set)
                 if len(bad_chars) == 0:
                     if len(entry['seq']) <= max_length:
                         if True:
@@ -592,7 +594,7 @@ class StructureDataset():
 
                 if verbose and (i + 1) % 1000 == 0:
                     elapsed = time.time() - start
-                    print('{} entries ({} loaded) in {:.1f} s'.format(len(self.data), i+1, elapsed))
+                    print(f'{len(self.data)} valid entries, {i+1} entries checked, {elapsed:.1f} s consumed')
             if verbose:
                 print('discarded', discard_count)
     def __len__(self):
@@ -603,43 +605,87 @@ class StructureDataset():
     
 
 class StructureDatasetPDB():
-    def __init__(self, pdb_dict_list, verbose=True, truncate=None, max_length=100,
-        alphabet='ACDEFGHIKLMNPQRSTVWYX-'):
-        alphabet_set = set([a for a in alphabet])
-        discard_count = {
+    '''
+    A lightweight in-memory dataset wrapping pre-parsed PDB entries.
+
+    Each entry is a dict produced by ``parse_PDB`` (keys include ``'seq'``,
+    ``'name'``, and ``'coords_chain_<ID>'``).  The constructor filters entries
+    by alphabet validity and sequence length, storing only the valid subset
+    in ``self.data``.
+
+    Args:
+        pdb_dict_list: list of parsed PDB entry dicts (output of ``parse_PDB``).
+        verbose: if True, print progress every 1000 entries.
+        truncate: if set, stop collecting once this many valid entries are gathered.
+        max_length: maximum allowed sequence length; longer entries are discarded.
+        alphabet: the one-letter amino-acid alphabet used for validation.
+    '''
+    def __init__(self, pdb_dict_list: list[dict[str, Any]], verbose: bool = True,
+                 truncate: int | None = None, max_length: int = 100,
+                 alphabet: str = PROTEIN_ALPHABET_WITH_GAP) -> None:
+        # build a set of valid amino acid letters for fast membership testing
+        alphabet_set: set[str] = set(alphabet)
+        # track how many entries were discarded and for what reason
+        discard_count: dict[str, int] = {
             'bad_chars': 0,
             'too_long': 0,
-            'bad_seq_length': 0
         }
 
-        self.data = []
+        # list of entries that passed all filters
+        self.data: list[dict[str, Any]] = []
 
-        start = time.time()
+        # record the start time for progress reporting
+        start: float = time.time()
+        # iterate over each parsed PDB entry with its index
         for i, entry in enumerate(pdb_dict_list):
-            seq = entry['seq']
-            name = entry['name']
+            # extract the one-letter amino acid sequence from the entry
+            seq: str = entry['seq']
+            # extract the entry name (e.g. PDB code + chain identifier)
+            name: str = entry['name']
 
-            bad_chars = set([s for s in seq]).difference(alphabet_set)
+            # find any characters in the sequence that are not in the alphabet
+            bad_chars: set[str] = set(seq).difference(alphabet_set)
+            # if the sequence contains only valid characters
             if len(bad_chars) == 0:
+                # check whether the sequence length is within the allowed limit
                 if len(entry['seq']) <= max_length:
+                    # entry passed all filters; add it to the dataset
                     self.data.append(entry)
                 else:
+                    # sequence exceeds max_length; record the discard reason
                     discard_count['too_long'] += 1
             else:
+                # sequence contains invalid characters; record the discard reason
                 discard_count['bad_chars'] += 1
 
-            # Truncate early
+            # early exit once the requested number of entries has been collected
             if truncate is not None and len(self.data) == truncate:
                 return
 
+            # print progress every 1000 entries when verbose is enabled
             if verbose and (i + 1) % 1000 == 0:
-                elapsed = time.time() - start
+                # compute elapsed time since the loop started
+                elapsed: float = time.time() - start
+                print(f'{len(self.data)} valid entries, {i+1} entries checked, {elapsed:.1f} s consumed')
 
-            #print('Discarded', discard_count)
-    def __len__(self):
+        # print discard summary after the loop finishes
+        if verbose:
+            print(f'discarded: {discard_count}')
+
+    def __len__(self) -> int:
+        '''Return the number of valid entries stored in the dataset.'''
         return len(self.data)
 
-    def __getitem__(self, idx):
+    def __getitem__(self, idx: int) -> dict[str, Any]:
+        '''
+        Return the dataset entry at the given index.
+
+        Args:
+            idx: zero-based index into ``self.data``.
+
+        Returns:
+            The PDB entry dict at position ``idx``.
+        '''
         return self.data[idx]
 
 

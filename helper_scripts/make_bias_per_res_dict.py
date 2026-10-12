@@ -5,8 +5,14 @@ def main(args):
     import random
     import numpy as np
     import json
-    
-    mpnn_alphabet = 'ACDEFGHIKLMNPQRSTVWYX'
+    import sys
+    import os
+
+    # add project root to sys.path so we can import the shared constants module
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from constants import PROTEIN_ALPHABET
+
+    mpnn_alphabet = PROTEIN_ALPHABET
     
     mpnn_alphabet_dict = {'A': 0, 'C': 1, 'D': 2, 'E': 3, 'F': 4, 'G': 5, 'H': 6, 'I': 7, 'K': 8, 'L': 9, 'M': 10, 'N': 11, 'P': 12, 'Q': 13, 'R': 14, 'S': 15, 'T': 16, 'V': 17, 'W': 18, 'Y': 19, 'X': 20}
      

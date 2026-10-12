@@ -15,9 +15,13 @@ import torch.nn.functional as F
 import random
 import itertools
 
+# add project root to sys.path so we can import the shared constants module
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from constants import PROTEIN_ALPHABET
+
 
 def featurize(batch, device):
-    alphabet = 'ACDEFGHIKLMNPQRSTVWYX'
+    alphabet = PROTEIN_ALPHABET
     B = len(batch)
     lengths = np.array([len(b['seq']) for b in batch], dtype=np.int32) #sum of chain seq lengths
     L_max = max([len(b['seq']) for b in batch])

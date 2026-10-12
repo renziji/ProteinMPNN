@@ -20,6 +20,7 @@ def main(args):
     
     from protein_mpnn_utils import loss_nll, loss_smoothed, gather_edges, gather_nodes, gather_nodes_t, cat_neighbors_nodes, _scores, _S_to_seq, tied_featurize, parse_PDB, parse_fasta
     from protein_mpnn_utils import StructureDataset, StructureDatasetPDB, ProteinMPNN
+    from constants import PROTEIN_ALPHABET
 
     if args.seed:
         seed=args.seed
@@ -61,7 +62,7 @@ def main(args):
     BATCH_COPIES = args.batch_size
     temperatures = [float(item) for item in args.sampling_temp.split()]
     omit_AAs_list = args.omit_AAs
-    alphabet = 'ACDEFGHIKLMNPQRSTVWYX'
+    alphabet = PROTEIN_ALPHABET
     alphabet_dict = dict(zip(alphabet, range(21)))    
     print_all = args.suppress_print == 0 
     omit_AAs_np = np.array([AA in omit_AAs_list for AA in alphabet]).astype(np.float32)

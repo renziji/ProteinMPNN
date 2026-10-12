@@ -6,11 +6,16 @@ import numpy as np
 import time
 import random
 import os
+import sys
+
+# add project root to sys.path so we can import the shared constants module
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from constants import PROTEIN_ALPHABET
 
 class StructureDataset():
     def __init__(self, pdb_dict_list, verbose=True, truncate=None, max_length=100,
-        alphabet='ACDEFGHIKLMNPQRSTVWYX'):
-        alphabet_set = set([a for a in alphabet])
+        alphabet=PROTEIN_ALPHABET):
+        alphabet_set = set(alphabet)
         discard_count = {
             'bad_chars': 0,
             'too_long': 0,
@@ -24,7 +29,7 @@ class StructureDataset():
             seq = entry['seq']
             name = entry['name']
 
-            bad_chars = set([s for s in seq]).difference(alphabet_set)
+            bad_chars = set(seq).difference(alphabet_set)
             if len(bad_chars) == 0:
                 if len(entry['seq']) <= max_length:
                     self.data.append(entry)

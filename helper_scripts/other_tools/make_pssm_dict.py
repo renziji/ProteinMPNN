@@ -5,6 +5,12 @@ import glob
 import random
 import numpy as np
 import json
+import sys
+import os
+
+# add project root to sys.path so we can import the shared constants module
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+from constants import PROTEIN_ALPHABET
 
 
 def softmax(x, T):
@@ -24,7 +30,7 @@ def parse_pssm(path):
 
 np_lines = parse_pssm('/home/swang523/RLcage/capsid/monomersfordesign/8-16-21/pssm_rainity_final_8-16-21_int/build_0.2089_0.98_0.4653_19_2.00_0.005745.pssm')
 
-mpnn_alphabet = 'ACDEFGHIKLMNPQRSTVWYX'
+mpnn_alphabet = PROTEIN_ALPHABET
 input_alphabet = 'ARNDCQEGHILKMFPSTWYV'
 
 permutation_matrix = np.zeros([20, 21])
