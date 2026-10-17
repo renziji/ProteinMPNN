@@ -39,19 +39,104 @@ def parse_fasta(filename, limit=-1, omit=[]):
     sequence = [''.join(seq) for seq in sequence]
     return np.array(header), np.array(sequence)
 
-def _scores(S, log_probs, mask):
-    """ Negative log probabilities """
-    criterion = torch.nn.NLLLoss(reduction='none')
-    loss = criterion(
+def _scores(
+    integer_encoded_sequence: torch.Tensor,
+    log_probs: torch.Tensor,
+    mask: torch.Tensor,
+) -> torch.Tensor:
+    """Negative log probability of the observed residue, averaged over masked positions.
+
+    For every sequence, look up the model's log-probability of the residue actually
+    present in ``integer_encoded_sequence`` at each position, keep only the positions
+    selected by ``mask``, and average them into one score per sequence. Lower values mean
+    the model assigns a higher probability to the observed sequence.
+
+    Args:
+        integer_encoded_sequence (torch.Tensor): integer residue-type indices of the
+            observed sequence, shape = [..., L], dtype int64. Values index into
+            ``PROTEIN_ALPHABET``. Describes either the native sequence or a sampled one.
+        log_probs (torch.Tensor): per-position log-softmax probabilities, shape =
+            [..., L, num_amino_acid_types] with last dim = 21 (alphabet size), dtype
+            float32. Must already be log-probabilities (see Notes).
+        mask (torch.Tensor): per-position weight, shape = [..., L], dtype float32.
+            1.0 for positions included in the score (valid, designable residues);
+            0.0 for padding or excluded positions.
+
+    Returns:
+        torch.Tensor: one score per leading index of ``integer_encoded_sequence``,
+            shape = [...], dtype float32, equal to
+            sum(loss * mask, dim=-1) / sum(mask, dim=-1).
+
+    Shape:
+        In this codebase the leading axis is the batch size B, so a typical call uses
+        integer_encoded_sequence shape = [B, L], log_probs shape = [B, L, 21] and mask
+        shape = [B, L], returning shape = [B]. An arbitrary number of leading axes is
+        supported: they are flattened before scoring and restored afterwards.
+
+    Notes:
+        ``torch.nn.NLLLoss`` expects log-probabilities, so ``log_probs`` must come from
+        a log-softmax (as produced by ProteinMPNN's forward pass), not raw logits. Every
+        ``mask`` slice must sum to a positive value, otherwise the division yields NaN.
+
+    Examples:
+        >>> integer_encoded_sequence = torch.tensor([[0, 1, 2]])
+        >>> log_probs = torch.log_softmax(torch.randn(1, 3, 21), dim=-1)
+        >>> mask = torch.ones(1, 3)
+        >>> _scores(integer_encoded_sequence, log_probs, mask).shape
+        torch.Size([1])
+    """
+    # Per-position loss with no reduction: one NLL value per (sequence, position) pair
+    criterion: torch.nn.NLLLoss = torch.nn.NLLLoss(reduction='none')
+    # Flatten the leading axes onto a single batch axis so NLLLoss consumes the whole
+    # batch in one call: log_probs [..., L, 21] -> [-1, 21] and
+    # integer_encoded_sequence [..., L] -> [-1], then restore the per-position losses
+    # to the sequence's shape [..., L]
+    loss: torch.Tensor = criterion(
         log_probs.contiguous().view(-1, log_probs.size(-1)),
-        S.contiguous().view(-1)
-    ).view(S.size())
-    scores = torch.sum(loss * mask, dim=-1) / torch.sum(mask, dim=-1)
+        integer_encoded_sequence.contiguous().view(-1)
+    ).view(integer_encoded_sequence.size())
+    # Zero out the masked-off positions, then average over the selected ones along L:
+    # loss and mask are [..., L] -> scores is [...]
+    scores: torch.Tensor = torch.sum(loss * mask, dim=-1) / torch.sum(mask, dim=-1)
+    # One negative log probability per sequence, shape = [...]
     return scores
 
-def _S_to_seq(S, mask):
-    alphabet = PROTEIN_ALPHABET
-    seq = ''.join([alphabet[c] for c, m in zip(S.tolist(), mask.tolist()) if m > 0])
+def _S_to_seq(integer_encoded_sequence: torch.Tensor, mask: torch.Tensor) -> str:
+    """Convert integer-encoded residue indices into a one-letter amino-acid sequence.
+
+    Positions whose ``mask`` value is 0 are skipped, so only the residues belonging to
+    the extracted sequence are kept. This is how a full multi-chain sequence is split
+    back into per-chain strings, e.g. for FASTA output.
+
+    Args:
+        integer_encoded_sequence (torch.Tensor): integer residue-type indices of one
+            sequence, shape = [L], dtype int64. Values index into ``PROTEIN_ALPHABET``.
+        mask (torch.Tensor): per-position selector, shape = [L], dtype float32. Positions
+            with a value > 0 are kept; 0.0 positions (padding, or residues of other
+            chains) are dropped.
+
+    Returns:
+        str: one-letter amino-acid sequence whose length equals the number of positions
+            with ``mask > 0``.
+
+    Examples:
+        >>> integer_encoded_sequence = torch.tensor([0, 1, 2])
+        >>> mask = torch.tensor([1.0, 0.0, 1.0])
+        >>> _S_to_seq(integer_encoded_sequence, mask)
+        'AD'
+    """
+    # Single source of truth for the residue alphabet: positional index -> one-letter code
+    alphabet: str = PROTEIN_ALPHABET
+    # Keep only the positions selected by the mask (value > 0), map each residue index to
+    # its one-letter code, and join the letters into the output string
+    seq: str = ''.join([
+        alphabet[residue_index]
+        for residue_index, position_weight in zip(
+            integer_encoded_sequence.tolist(), mask.tolist()
+        )
+        if position_weight > 0
+    ])
+    # One-letter sequence of the selected residues
     return seq
 
 def parse_PDB_biounits(
